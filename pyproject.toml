@@ -1,6 +1,6 @@
 [project]
 name = "pglens"
-version = "0.1.0"
+version = "0.2.0"
 description = "PostgreSQL MCP server for schema inspection, data exploration, and query execution."
 readme = "README.md"
 requires-python = ">=3.11"
