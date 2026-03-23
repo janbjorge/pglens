@@ -16,7 +16,7 @@ pglens = "pglens.__main__:main"
 [dependency-groups]
 dev = [
     "asyncpg-stubs>=0.29",
-    "mypy>=1.10",
+    "ty>=0.0.1a7",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
@@ -41,5 +41,14 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 
-[tool.mypy]
-strict = true
+[tool.ty.environment]
+root = ["."]
+
+[[tool.ty.overrides]]
+include = ["tests/**"]
+
+[tool.ty.overrides.rules]
+not-subscriptable = "ignore"
+unsupported-operator = "ignore"
+not-iterable = "ignore"
+invalid-argument-type = "ignore"

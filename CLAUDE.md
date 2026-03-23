@@ -17,7 +17,7 @@ uv run ruff check .
 uv run ruff format --check .
 
 # Type check
-uv run mypy .
+uv run ty check
 
 # Run all tests
 uv run pytest tests/ -v
@@ -61,7 +61,8 @@ asyncpg pool → PostgreSQL (readonly transactions)
 
 - Keep `README.md` up to date when making user-facing changes (new tools, config changes, usage changes).
 - Python 3.11+ required. Strict mypy enabled.
-- CI runs ruff check, ruff format, mypy, and pytest on every push/PR.
+- Linting (`ruff check`, `ruff format --check`) and type checking (`ty check`) currently pass — keep them green.
+- CI runs ruff check, ruff format, ty check, and pytest on every push/PR.
 - **Never use global variables.** Pass state explicitly via function parameters, class attributes, or dependency injection.
 - **Never use `Any` for typing.** Use specific types, `object`, generics, `Protocol`, or `TypeVar` instead. If a type is truly unknown, prefer `object` over `Any`.
 - **Never use `getattr`/`setattr`/`delattr` or other dynamic attribute access.** Use explicit attribute access instead.

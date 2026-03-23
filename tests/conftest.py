@@ -96,7 +96,8 @@ INSERT INTO orders (user_id, status) VALUES (1, 'pending'), (1, 'shipped'), (2, 
 INSERT INTO order_items (order_id, product_id, quantity) VALUES (1, 1, 2), (1, 2, 1), (2, 3, 5);
 INSERT INTO shipping_regions (country_code, region_code, name) VALUES
     ('US', 'CA', 'California'), ('US', 'NY', 'New York');
-INSERT INTO warehouses (country_code, region_code, name) VALUES ('US', 'CA', 'West Coast Warehouse');
+INSERT INTO warehouses (country_code, region_code, name)
+    VALUES ('US', 'CA', 'West Coast Warehouse');
 
 REFRESH MATERIALIZED VIEW order_summary;
 ANALYZE;
