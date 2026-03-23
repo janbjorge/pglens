@@ -62,3 +62,6 @@ asyncpg pool → PostgreSQL (readonly transactions)
 - Keep `README.md` up to date when making user-facing changes (new tools, config changes, usage changes).
 - Python 3.11+ required. Strict mypy enabled.
 - CI runs ruff check, ruff format, mypy, and pytest on every push/PR.
+- **Never use global variables.** Pass state explicitly via function parameters, class attributes, or dependency injection.
+- **Never use `Any` for typing.** Use specific types, `object`, generics, `Protocol`, or `TypeVar` instead. If a type is truly unknown, prefer `object` over `Any`.
+- **Never use `getattr`/`setattr`/`delattr` or other dynamic attribute access.** Use explicit attribute access instead.

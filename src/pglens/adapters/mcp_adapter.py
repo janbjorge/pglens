@@ -2,14 +2,14 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
 
 import asyncpg
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.session import ServerSession
 
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
 
-Ctx = Context[Any, AsyncpgDatabase, Any]
+Ctx = Context[ServerSession, AsyncpgDatabase, object]
 
 
 @asynccontextmanager

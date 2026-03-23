@@ -1,6 +1,5 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -300,11 +299,13 @@ class TestFindJoinPath:
                 to_column="id",
             ),
         ]
-        result: dict[str, Any] = await db.find_join_path("users", "orders", "public", 4)
-        assert result["paths_found"] >= 1
-        assert result["paths"][0]["hops"] == 1
-        assert "users" in result["paths"][0]["tables"]
-        assert "orders" in result["paths"][0]["tables"]
+        result = await db.find_join_path("users", "orders", "public", 4)
+        assert isinstance(result["paths_found"], int) and result["paths_found"] >= 1
+        paths = result["paths"]
+        assert isinstance(paths, list) and len(paths) >= 1
+        assert paths[0]["hops"] == 1
+        assert "users" in paths[0]["tables"]
+        assert "orders" in paths[0]["tables"]
 
     async def test_find_join_path_no_path(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
         pool.fetch.return_value = []
@@ -327,10 +328,11 @@ class TestFindJoinPath:
                 to_column="id",
             ),
         ]
-        result: dict[str, Any] = await db.find_join_path("users", "order_items", "public", 4)
-        assert result["paths_found"] >= 1
-        # Should be a 2-hop path
-        two_hop = [p for p in result["paths"] if p["hops"] == 2]
+        result = await db.find_join_path("users", "order_items", "public", 4)
+        assert isinstance(result["paths_found"], int) and result["paths_found"] >= 1
+        paths = result["paths"]
+        assert isinstance(paths, list)
+        two_hop = [p for p in paths if p["hops"] == 2]
         assert len(two_hop) >= 1
         assert two_hop[0]["tables"] == ["users", "orders", "order_items"]
 
