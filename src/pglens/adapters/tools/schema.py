@@ -1,0 +1,108 @@
+"""Schema and discovery tools."""
+
+from pglens.adapters.mcp_adapter import Ctx, db, mcp
+from pglens.core.types import (
+    MaxDepth,
+    Schema,
+    SourceTable,
+    TableName,
+    TargetTable,
+)
+
+
+@mcp.tool()
+async def list_schemas(ctx: Ctx) -> list[dict[str, object]]:
+    """List all user-visible schemas with table and view counts.
+    Call this first to discover non-public schemas before exploring tables.
+    """
+    return await db(ctx).list_schemas()
+
+
+@mcp.tool()
+async def list_tables(ctx: Ctx, schema: Schema = "public") -> list[dict[str, object]]:
+    """List tables in the schema with estimated row counts and table descriptions.
+    Good starting point to see what the database contains.
+    """
+    return await db(ctx).list_tables(schema)
+
+
+@mcp.tool()
+async def list_views(ctx: Ctx, schema: Schema = "public") -> list[dict[str, object]]:
+    """List views with their SQL definitions.
+    Views often contain pre-joined queries that can save you from writing complex joins.
+    """
+    return await db(ctx).list_views(schema)
+
+
+@mcp.tool()
+async def list_extensions(ctx: Ctx) -> list[dict[str, object]]:
+    """List installed Postgres extensions and versions.
+    Check this before using extension-specific functions like PostGIS or pg_trgm.
+    """
+    return await db(ctx).list_extensions()
+
+
+@mcp.tool()
+async def describe_table(
+    ctx: Ctx, table_name: TableName, schema: Schema = "public"
+) -> dict[str, object]:
+    """Get detailed table structure: columns, types, defaults, nullability,
+    primary keys, foreign keys, indexes, and check constraints.
+    Call this before writing queries against a table to get correct column names and types.
+    """
+    return await db(ctx).describe_table(table_name, schema)
+
+
+@mcp.tool()
+async def find_related_tables(
+    ctx: Ctx, table_name: TableName, schema: Schema = "public"
+) -> dict[str, object]:
+    """Show tables that this table references and tables that reference it via foreign keys.
+    Use this to determine correct JOIN conditions between tables.
+    """
+    return await db(ctx).find_related_tables(table_name, schema)
+
+
+@mcp.tool()
+async def find_join_path(
+    ctx: Ctx,
+    source_table: SourceTable,
+    target_table: TargetTable,
+    schema: Schema = "public",
+    max_depth: MaxDepth = 4,
+) -> dict[str, object]:
+    """Find how to JOIN two tables that may not be directly related.
+    Traverses foreign key relationships and returns all paths from source to target
+    with the exact join conditions for each hop. Use this when you need to query
+    across tables that are multiple foreign keys apart.
+    """
+    return await db(ctx).find_join_path(source_table, target_table, schema, max_depth)
+
+
+@mcp.tool()
+async def list_functions(ctx: Ctx, schema: Schema = "public") -> list[dict[str, object]]:
+    """List stored functions and procedures with their arguments, return type, language,
+    volatility, and source code. Use to understand what business logic lives in the database.
+    """
+    return await db(ctx).list_functions(schema)
+
+
+@mcp.tool()
+async def list_triggers(
+    ctx: Ctx, table_name: TableName, schema: Schema = "public"
+) -> list[dict[str, object]]:
+    """Show triggers on a table: name, full definition, enabled/disabled status, and
+    which function they call. Triggers can silently modify data on INSERT/UPDATE/DELETE.
+    """
+    return await db(ctx).list_triggers(table_name, schema)
+
+
+@mcp.tool()
+async def list_policies(
+    ctx: Ctx, table_name: TableName, schema: Schema = "public"
+) -> list[dict[str, object]]:
+    """Show row-level security policies on a table: command scope (SELECT/INSERT/UPDATE/DELETE),
+    permissive vs restrictive, USING and WITH CHECK expressions, and applicable roles.
+    RLS policies silently filter rows — check these if queries return fewer rows than expected.
+    """
+    return await db(ctx).list_policies(table_name, schema)
