@@ -55,7 +55,7 @@ asyncpg pool → PostgreSQL (readonly transactions)
 - **Return values**: Convert asyncpg Records to dicts (`[dict(r) for r in rows]`) for JSON serialization.
 - **Schema default**: Most tools default the schema parameter to `"public"`.
 - **Tool registration**: Tool modules use decorator side effects at import time — they're imported as `import pglens.adapters.tools.schema as _schema` in `mcp_adapter.py`.
-- **Testing**: Tests mock the asyncpg pool/connection. Use `make_record(**kwargs)` helper to create mock records. Tests use `pytest-asyncio` with `asyncio_mode="auto"`.
+- **Testing**: Unit tests mock the asyncpg pool/connection using `make_record(**kwargs)`. Integration tests run against a real PostgreSQL via testcontainers (requires Docker). Tests use `pytest-asyncio` with `asyncio_mode="auto"` and session-scoped event loops.
 
 ## Important
 

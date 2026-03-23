@@ -102,18 +102,19 @@ class AsyncpgDatabase:
         columns = [
             dict(r)
             for r in await self.pool.fetch(
-                f"""
+                """
                 SELECT
                     c.column_name,
                     c.data_type,
                     c.udt_name,
                     c.is_nullable,
                     c.column_default,
-                    col_description({ref}::regclass, c.ordinal_position) AS description
+                    col_description($1::regclass, c.ordinal_position) AS description
                 FROM information_schema.columns c
-                WHERE c.table_schema = $1 AND c.table_name = $2
+                WHERE c.table_schema = $2 AND c.table_name = $3
                 ORDER BY c.ordinal_position
                 """,
+                ref,
                 schema,
                 table_name,
             )
@@ -122,13 +123,14 @@ class AsyncpgDatabase:
         primary_keys = [
             r["column_name"]
             for r in await self.pool.fetch(
-                f"""
+                """
                 SELECT a.attname AS column_name
                 FROM pg_index i
                 JOIN pg_attribute a ON a.attrelid = i.indrelid
                     AND a.attnum = ANY(i.indkey)
-                WHERE i.indrelid = {ref}::regclass AND i.indisprimary
+                WHERE i.indrelid = $1::regclass AND i.indisprimary
                 """,
+                ref,
             )
         ]
 
@@ -164,30 +166,32 @@ class AsyncpgDatabase:
         indexes = [
             dict(r)
             for r in await self.pool.fetch(
-                f"""
+                """
                 SELECT
                     i.relname AS index_name,
                     ix.indisunique AS is_unique,
                     pg_get_indexdef(ix.indexrelid) AS definition
                 FROM pg_index ix
                 JOIN pg_class i ON i.oid = ix.indexrelid
-                WHERE ix.indrelid = {ref}::regclass
+                WHERE ix.indrelid = $1::regclass
                 ORDER BY i.relname
                 """,
+                ref,
             )
         ]
 
         check_constraints = [
             dict(r)
             for r in await self.pool.fetch(
-                f"""
+                """
                 SELECT
                     conname AS constraint_name,
                     pg_get_constraintdef(oid) AS definition
                 FROM pg_constraint
-                WHERE conrelid = {ref}::regclass AND contype = 'c'
+                WHERE conrelid = $1::regclass AND contype = 'c'
                 ORDER BY conname
                 """,
+                ref,
             )
         ]
 
@@ -628,7 +632,7 @@ class AsyncpgDatabase:
                     SELECT c.oid
                     FROM pg_class c
                     JOIN pg_namespace n ON c.relnamespace = n.oid
-                    WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind = $3
+                    WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind::text = $3
                 )
                 SELECT DISTINCT
                     CASE d.classid
@@ -855,7 +859,7 @@ class AsyncpgDatabase:
         return [
             dict(r)
             for r in await self.pool.fetch(
-                f"""
+                """
                 SELECT
                     t.tgname AS trigger_name,
                     pg_get_triggerdef(t.oid) AS definition,
@@ -868,10 +872,11 @@ class AsyncpgDatabase:
                     p.proname AS function_name
                 FROM pg_trigger t
                 JOIN pg_proc p ON t.tgfoid = p.oid
-                WHERE t.tgrelid = {ref}::regclass
+                WHERE t.tgrelid = $1::regclass
                     AND NOT t.tgisinternal
                 ORDER BY t.tgname
                 """,
+                ref,
             )
         ]
 

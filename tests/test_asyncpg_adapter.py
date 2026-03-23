@@ -159,6 +159,7 @@ class TestColumnValues:
 
 class TestDescribeTable:
     async def test_describe_table_structure(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+        pool.fetchval.return_value = '"public"."orders"'
         pool.fetch.side_effect = [
             [
                 make_record(
