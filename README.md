@@ -1,6 +1,6 @@
 # pglens
 
-A PostgreSQL MCP server with tools for schema inspection, data exploration, and query execution.
+A PostgreSQL MCP server with tools for schema inspection, data exploration, query execution, and database health monitoring.
 
 ## Motivation
 
@@ -10,6 +10,8 @@ pglens adds the tools that close those gaps: checking what values actually exist
 
 ## Tools
 
+### Schema and discovery
+
 | Tool | What it does |
 |---|---|
 | `list_tables` | Tables with row counts and descriptions |
@@ -17,14 +19,45 @@ pglens adds the tools that close those gaps: checking what values actually exist
 | `list_extensions` | Installed extensions and versions |
 | `describe_table` | Columns, types, PKs, FKs, indexes, check constraints |
 | `find_related_tables` | FK relationships in both directions |
+| `list_functions` | Stored functions/procedures with source code |
+| `list_triggers` | Triggers on a table with definitions and status |
+| `list_policies` | Row-level security policies on a table |
+
+### Data exploration
+
+| Tool | What it does |
+|---|---|
 | `sample_rows` | Random rows from a table |
 | `column_values` | Distinct values with frequency counts |
 | `search_data` | Case-insensitive search across text columns |
 | `search_columns` | Find columns by name across all tables |
 | `search_enum_values` | Enum types and their allowed values |
-| `table_stats` | Index hit rates, dead tuples, vacuum timestamps |
+
+### Query execution
+
+| Tool | What it does |
+|---|---|
 | `explain_query` | Query plan without execution |
 | `query` | Read-only SQL, capped at 500 rows |
+
+### Performance and health
+
+| Tool | What it does |
+|---|---|
+| `table_stats` | Index hit rates, dead tuples, vacuum timestamps |
+| `table_sizes` | Disk usage per table, ranked by size |
+| `unused_indexes` | Indexes that are never scanned |
+| `bloat_stats` | Dead tuples, vacuum status, wraparound risk |
+| `active_queries` | Currently running sessions and their queries |
+| `blocking_locks` | Lock wait chains (who blocks whom) |
+| `sequence_health` | Sequences approaching exhaustion |
+| `matview_status` | Materialized view freshness and refresh eligibility |
+
+### Safety before DDL
+
+| Tool | What it does |
+|---|---|
+| `object_dependencies` | What depends on a given object (views, functions, constraints) |
 
 There is also a `query_guide` prompt that describes a reasonable workflow for using these tools together.
 
@@ -111,29 +144,26 @@ The server uses stdio transport.
 
 ## Architecture
 
-pglens uses ports and adapters (hexagonal architecture):
-
 ```
-MCP Server (input adapter)
+mcp_adapter.py  (MCP tool definitions, lifespan)
     |
-DatabasePort (protocol)
+asyncpg_adapter.py  (SQL queries, asyncpg pool)
     |
-AsyncpgDatabase (output adapter) --> PostgreSQL
+PostgreSQL
 ```
 
-`DatabasePort` is a Python Protocol with 13 methods. `AsyncpgDatabase` implements it with asyncpg. The MCP layer is a thin wrapper that delegates to the port.
-
-To swap the database driver, implement `DatabasePort` with a different library. To test without a database, pass in a fake.
+`AsyncpgDatabase` holds the asyncpg pool and all query methods. The MCP layer is a thin wrapper that delegates to it. All queries use pure `pg_catalog` introspection — no PostgreSQL extensions required.
 
 ## Adding a tool
 
-1. Add a method to `DatabasePort` in `core/ports.py`
-2. Implement it in `adapters/asyncpg_adapter.py`
-3. Add a `@mcp.tool()` function in `adapters/mcp_adapter.py`
+1. Add a method to `AsyncpgDatabase` in `adapters/asyncpg_adapter.py`
+2. Add a `@mcp.tool()` function in `adapters/mcp_adapter.py`
 
 ## Safety
 
-All queries run inside `readonly=True` transactions. No DDL tools are exposed.
+- All user-influenced queries run inside `readonly=True` transactions
+- Table and column identifiers are escaped via PostgreSQL's `quote_ident()`
+- No DDL tools are exposed
 
 ## Requirements
 
