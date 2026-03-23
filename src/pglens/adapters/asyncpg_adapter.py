@@ -1,6 +1,7 @@
 """Query class backed by asyncpg."""
 
 from dataclasses import dataclass
+from typing import cast
 
 import asyncpg
 
@@ -26,14 +27,17 @@ class AsyncpgDatabase:
     pool: asyncpg.Pool
 
     async def safe_table_ref(self, schema: str, table_name: str) -> str:
-        return await self.pool.fetchval(
-            "SELECT quote_ident($1) || '.' || quote_ident($2)",
-            schema,
-            table_name,
+        return cast(
+            str,
+            await self.pool.fetchval(
+                "SELECT quote_ident($1) || '.' || quote_ident($2)",
+                schema,
+                table_name,
+            ),
         )
 
     async def safe_column_ref(self, column_name: str) -> str:
-        return await self.pool.fetchval("SELECT quote_ident($1)", column_name)
+        return cast(str, await self.pool.fetchval("SELECT quote_ident($1)", column_name))
 
     async def list_tables(self, schema: str) -> list[dict[str, object]]:
         return [
