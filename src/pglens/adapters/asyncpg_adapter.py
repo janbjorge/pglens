@@ -89,7 +89,7 @@ class AsyncpgDatabase:
             dict(r)
             for r in await self.pool.fetch(
                 """
-                SELECT extname, extversion, obj_description(e.oid) AS description
+                SELECT extname, extversion, obj_description(e.oid, 'pg_extension') AS description
                 FROM pg_extension e
                 ORDER BY extname
                 """
@@ -97,24 +97,23 @@ class AsyncpgDatabase:
         ]
 
     async def describe_table(self, table_name: str, schema: str) -> dict[str, object]:
-        fqn = f"{schema}.{table_name}"
+        ref = await self.safe_table_ref(schema, table_name)
 
         columns = [
             dict(r)
             for r in await self.pool.fetch(
-                """
+                f"""
                 SELECT
                     c.column_name,
                     c.data_type,
                     c.udt_name,
                     c.is_nullable,
                     c.column_default,
-                    col_description($1::regclass, c.ordinal_position) AS description
+                    col_description({ref}::regclass, c.ordinal_position) AS description
                 FROM information_schema.columns c
-                WHERE c.table_schema = $2 AND c.table_name = $3
+                WHERE c.table_schema = $1 AND c.table_name = $2
                 ORDER BY c.ordinal_position
                 """,
-                fqn,
                 schema,
                 table_name,
             )
@@ -123,14 +122,13 @@ class AsyncpgDatabase:
         primary_keys = [
             r["column_name"]
             for r in await self.pool.fetch(
-                """
+                f"""
                 SELECT a.attname AS column_name
                 FROM pg_index i
                 JOIN pg_attribute a ON a.attrelid = i.indrelid
                     AND a.attnum = ANY(i.indkey)
-                WHERE i.indrelid = $1::regclass AND i.indisprimary
+                WHERE i.indrelid = {ref}::regclass AND i.indisprimary
                 """,
-                fqn,
             )
         ]
 
@@ -139,18 +137,24 @@ class AsyncpgDatabase:
             for r in await self.pool.fetch(
                 """
                 SELECT
-                    kcu.column_name,
-                    ccu.table_schema AS foreign_schema,
-                    ccu.table_name AS foreign_table,
-                    ccu.column_name AS foreign_column
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                    ON tc.constraint_name = kcu.constraint_name
-                    AND tc.table_schema = kcu.table_schema
-                JOIN information_schema.constraint_column_usage ccu
-                    ON tc.constraint_name = ccu.constraint_name
-                WHERE tc.constraint_type = 'FOREIGN KEY'
-                    AND tc.table_schema = $1 AND tc.table_name = $2
+                    a1.attname AS column_name,
+                    ns2.nspname AS foreign_schema,
+                    cl2.relname AS foreign_table,
+                    a2.attname AS foreign_column
+                FROM pg_constraint con
+                JOIN pg_class cl1 ON con.conrelid = cl1.oid
+                JOIN pg_namespace ns1 ON cl1.relnamespace = ns1.oid
+                JOIN pg_class cl2 ON con.confrelid = cl2.oid
+                JOIN pg_namespace ns2 ON cl2.relnamespace = ns2.oid
+                CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
+                    WITH ORDINALITY AS u(local_attnum, foreign_attnum, ord)
+                JOIN pg_attribute a1
+                    ON a1.attrelid = con.conrelid AND a1.attnum = u.local_attnum
+                JOIN pg_attribute a2
+                    ON a2.attrelid = con.confrelid AND a2.attnum = u.foreign_attnum
+                WHERE con.contype = 'f'
+                    AND ns1.nspname = $1 AND cl1.relname = $2
+                ORDER BY con.conname, u.ord
                 """,
                 schema,
                 table_name,
@@ -160,37 +164,35 @@ class AsyncpgDatabase:
         indexes = [
             dict(r)
             for r in await self.pool.fetch(
-                """
+                f"""
                 SELECT
                     i.relname AS index_name,
                     ix.indisunique AS is_unique,
                     pg_get_indexdef(ix.indexrelid) AS definition
                 FROM pg_index ix
                 JOIN pg_class i ON i.oid = ix.indexrelid
-                WHERE ix.indrelid = $1::regclass
+                WHERE ix.indrelid = {ref}::regclass
                 ORDER BY i.relname
                 """,
-                fqn,
             )
         ]
 
         check_constraints = [
             dict(r)
             for r in await self.pool.fetch(
-                """
+                f"""
                 SELECT
                     conname AS constraint_name,
                     pg_get_constraintdef(oid) AS definition
                 FROM pg_constraint
-                WHERE conrelid = $1::regclass AND contype = 'c'
+                WHERE conrelid = {ref}::regclass AND contype = 'c'
                 ORDER BY conname
                 """,
-                fqn,
             )
         ]
 
         return {
-            "table": fqn,
+            "table": f"{schema}.{table_name}",
             "columns": columns,
             "primary_keys": primary_keys,
             "foreign_keys": foreign_keys,
@@ -204,17 +206,24 @@ class AsyncpgDatabase:
             for r in await self.pool.fetch(
                 """
                 SELECT
-                    kcu.column_name AS from_column,
-                    ccu.table_schema AS to_schema,
-                    ccu.table_name AS to_table,
-                    ccu.column_name AS to_column
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                    ON tc.constraint_name = kcu.constraint_name
-                JOIN information_schema.constraint_column_usage ccu
-                    ON tc.constraint_name = ccu.constraint_name
-                WHERE tc.constraint_type = 'FOREIGN KEY'
-                    AND tc.table_schema = $1 AND tc.table_name = $2
+                    a1.attname AS from_column,
+                    ns2.nspname AS to_schema,
+                    cl2.relname AS to_table,
+                    a2.attname AS to_column
+                FROM pg_constraint con
+                JOIN pg_class cl1 ON con.conrelid = cl1.oid
+                JOIN pg_namespace ns1 ON cl1.relnamespace = ns1.oid
+                JOIN pg_class cl2 ON con.confrelid = cl2.oid
+                JOIN pg_namespace ns2 ON cl2.relnamespace = ns2.oid
+                CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
+                    WITH ORDINALITY AS u(local_attnum, foreign_attnum, ord)
+                JOIN pg_attribute a1
+                    ON a1.attrelid = con.conrelid AND a1.attnum = u.local_attnum
+                JOIN pg_attribute a2
+                    ON a2.attrelid = con.confrelid AND a2.attnum = u.foreign_attnum
+                WHERE con.contype = 'f'
+                    AND ns1.nspname = $1 AND cl1.relname = $2
+                ORDER BY con.conname, u.ord
                 """,
                 schema,
                 table_name,
@@ -226,17 +235,24 @@ class AsyncpgDatabase:
             for r in await self.pool.fetch(
                 """
                 SELECT
-                    kcu.table_schema AS from_schema,
-                    kcu.table_name AS from_table,
-                    kcu.column_name AS from_column,
-                    ccu.column_name AS to_column
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                    ON tc.constraint_name = kcu.constraint_name
-                JOIN information_schema.constraint_column_usage ccu
-                    ON tc.constraint_name = ccu.constraint_name
-                WHERE tc.constraint_type = 'FOREIGN KEY'
-                    AND ccu.table_schema = $1 AND ccu.table_name = $2
+                    ns1.nspname AS from_schema,
+                    cl1.relname AS from_table,
+                    a1.attname AS from_column,
+                    a2.attname AS to_column
+                FROM pg_constraint con
+                JOIN pg_class cl1 ON con.conrelid = cl1.oid
+                JOIN pg_namespace ns1 ON cl1.relnamespace = ns1.oid
+                JOIN pg_class cl2 ON con.confrelid = cl2.oid
+                JOIN pg_namespace ns2 ON cl2.relnamespace = ns2.oid
+                CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
+                    WITH ORDINALITY AS u(local_attnum, foreign_attnum, ord)
+                JOIN pg_attribute a1
+                    ON a1.attrelid = con.conrelid AND a1.attnum = u.local_attnum
+                JOIN pg_attribute a2
+                    ON a2.attrelid = con.confrelid AND a2.attnum = u.foreign_attnum
+                WHERE con.contype = 'f'
+                    AND ns2.nspname = $1 AND cl2.relname = $2
+                ORDER BY con.conname, u.ord
                 """,
                 schema,
                 table_name,
@@ -257,18 +273,22 @@ class AsyncpgDatabase:
         fk_rows = await self.pool.fetch(
             """
             SELECT
-                kcu.table_name AS from_table,
-                kcu.column_name AS from_column,
-                ccu.table_name AS to_table,
-                ccu.column_name AS to_column
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name
-                AND tc.table_schema = kcu.table_schema
-            JOIN information_schema.constraint_column_usage ccu
-                ON tc.constraint_name = ccu.constraint_name
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-                AND tc.table_schema = $1
+                cl1.relname AS from_table,
+                a1.attname AS from_column,
+                cl2.relname AS to_table,
+                a2.attname AS to_column
+            FROM pg_constraint con
+            JOIN pg_class cl1 ON con.conrelid = cl1.oid
+            JOIN pg_namespace ns1 ON cl1.relnamespace = ns1.oid
+            JOIN pg_class cl2 ON con.confrelid = cl2.oid
+            CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
+                WITH ORDINALITY AS u(local_attnum, foreign_attnum, ord)
+            JOIN pg_attribute a1
+                ON a1.attrelid = con.conrelid AND a1.attnum = u.local_attnum
+            JOIN pg_attribute a2
+                ON a2.attrelid = con.confrelid AND a2.attnum = u.foreign_attnum
+            WHERE con.contype = 'f'
+                AND ns1.nspname = $1
             """,
             schema,
         )
@@ -378,7 +398,7 @@ class AsyncpgDatabase:
             SELECT quote_ident(column_name) AS safe_name
             FROM information_schema.columns
             WHERE table_schema = $1 AND table_name = $2
-                AND data_type IN ('text', 'character varying', 'char', 'name')
+                AND data_type IN ('text', 'character varying', 'character', 'name')
             ORDER BY ordinal_position
             """,
             schema,
@@ -387,6 +407,7 @@ class AsyncpgDatabase:
         if not text_cols:
             return []
         ref = await self.safe_table_ref(schema, table_name)
+        escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         conditions = " OR ".join(f"{r['safe_name']} ILIKE $1" for r in text_cols)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
@@ -396,11 +417,12 @@ class AsyncpgDatabase:
                     WHERE {conditions}
                     LIMIT 50
                     """,
-                    f"%{keyword}%",
+                    f"%{escaped}%",
                 )
                 return [dict(r) for r in rows]
 
     async def search_columns(self, keyword: str, schema: str) -> list[dict[str, object]]:
+        escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -412,11 +434,12 @@ class AsyncpgDatabase:
                 ORDER BY table_name, ordinal_position
                 """,
                 schema,
-                keyword,
+                escaped,
             )
         ]
 
     async def search_enum_values(self, keyword: str) -> list[dict[str, object]]:
+        escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -430,7 +453,7 @@ class AsyncpgDatabase:
                 GROUP BY t.typname
                 ORDER BY t.typname
                 """,
-                keyword,
+                escaped,
             )
         ]
 
@@ -596,6 +619,7 @@ class AsyncpgDatabase:
             ]
 
         relkind = object_type_to_relkind(object_type)
+        escaped_name = object_name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -658,7 +682,7 @@ class AsyncpgDatabase:
                 object_name,
                 schema,
                 relkind,
-                object_name,
+                escaped_name,
             )
         ]
 
@@ -827,11 +851,11 @@ class AsyncpgDatabase:
         ]
 
     async def list_triggers(self, table_name: str, schema: str) -> list[dict[str, object]]:
-        fqn = f"{schema}.{table_name}"
+        ref = await self.safe_table_ref(schema, table_name)
         return [
             dict(r)
             for r in await self.pool.fetch(
-                """
+                f"""
                 SELECT
                     t.tgname AS trigger_name,
                     pg_get_triggerdef(t.oid) AS definition,
@@ -844,11 +868,10 @@ class AsyncpgDatabase:
                     p.proname AS function_name
                 FROM pg_trigger t
                 JOIN pg_proc p ON t.tgfoid = p.oid
-                WHERE t.tgrelid = $1::regclass
+                WHERE t.tgrelid = {ref}::regclass
                     AND NOT t.tgisinternal
                 ORDER BY t.tgname
                 """,
-                fqn,
             )
         ]
 
@@ -903,7 +926,7 @@ class AsyncpgDatabase:
                     s.max_value,
                     s.increment_by,
                     s.cycle AS is_cycled,
-                    CASE WHEN s.max_value > 0 AND s.last_value IS NOT NULL
+                    CASE WHEN s.max_value != s.min_value AND s.last_value IS NOT NULL
                         THEN round(
                             100.0 * (s.last_value - s.min_value)
                             / (s.max_value - s.min_value), 2
