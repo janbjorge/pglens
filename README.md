@@ -93,6 +93,15 @@ export PGDATABASE=mydb
 pglens
 ```
 
+Alternatively, set a connection string via `PGLENS_DSN`:
+
+```bash
+export PGLENS_DSN="postgresql://myuser:mypassword@localhost:5432/mydb"
+pglens
+```
+
+When `PGLENS_DSN` is set, it takes precedence over individual `PG*` environment variables.
+
 By default the server uses stdio transport. To run as an HTTP server for remote use:
 
 ```bash
@@ -111,11 +120,7 @@ pglens --transport streamable-http
     "pglens": {
       "command": "pglens",
       "env": {
-        "PGHOST": "localhost",
-        "PGPORT": "5432",
-        "PGUSER": "myuser",
-        "PGPASSWORD": "mypassword",
-        "PGDATABASE": "mydb"
+        "PGLENS_DSN": "postgresql://myuser:mypassword@localhost:5432/mydb"
       }
     }
   }

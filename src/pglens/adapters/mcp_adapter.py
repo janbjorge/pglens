@@ -1,5 +1,6 @@
 """MCP server backed by asyncpg."""
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -14,7 +15,8 @@ Ctx = Context[ServerSession, AsyncpgDatabase, object]
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AsyncpgDatabase]:
-    async with asyncpg.create_pool(min_size=1, max_size=5) as pool:
+    dsn = os.environ.get("PGLENS_DSN")
+    async with asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5) as pool:
         yield AsyncpgDatabase(pool)
 
 
