@@ -5,6 +5,20 @@ from dataclasses import dataclass
 from typing import cast
 
 import asyncpg
+from pglast import ast, parse_sql
+
+
+def validate_select(sql: str) -> None:
+    """Validate that sql is a single SELECT (or WITH ... SELECT) statement.
+
+    Raises ValueError for multi-statement input, non-SELECT statements,
+    or syntactically invalid SQL (via pglast/PostgreSQL's own parser).
+    """
+    stmts = parse_sql(sql)
+    if len(stmts) != 1:
+        raise ValueError(f"Expected a single SQL statement, got {len(stmts)}")
+    if not isinstance(stmts[0].stmt, ast.SelectStmt):
+        raise ValueError(f"Only SELECT statements are allowed, got {type(stmts[0].stmt).__name__}")
 
 
 def object_type_to_relkind(object_type: str) -> str:
@@ -491,12 +505,14 @@ class AsyncpgDatabase:
         ]
 
     async def explain_query(self, sql: str) -> str:
+        validate_select(sql)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 rows = await conn.fetch(f"EXPLAIN (ANALYZE false, FORMAT TEXT) {sql}")
                 return "\n".join(r["QUERY PLAN"] for r in rows)
 
     async def query(self, sql: str, limit: int = 500, offset: int = 0) -> list[dict[str, object]]:
+        validate_select(sql)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 rows = await conn.fetch(

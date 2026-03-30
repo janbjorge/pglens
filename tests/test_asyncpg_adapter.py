@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
+from pglens.adapters.asyncpg_adapter import AsyncpgDatabase, validate_select
 
 
 def make_record(**kwargs: object) -> MagicMock:
@@ -246,6 +246,241 @@ class TestQueryAndExplain:
         assert "Seq Scan on users" in result
         assert "Filter: (id > 0)" in result
         assert "\n" in result
+
+
+class TestValidateSelect:
+    """Tests for SQL parsing defense using pglast (PostgreSQL's own parser)."""
+
+    # --- Allowed: single SELECT statements ---
+
+    def test_simple_select(self) -> None:
+        validate_select("SELECT 1")
+
+    def test_select_from_table(self) -> None:
+        validate_select("SELECT id, name FROM users WHERE id = 1")
+
+    def test_select_with_joins(self) -> None:
+        validate_select("SELECT u.id, o.total FROM users u JOIN orders o ON u.id = o.user_id")
+
+    def test_select_with_subquery(self) -> None:
+        validate_select("SELECT * FROM (SELECT 1 AS x) sub")
+
+    def test_select_with_cte(self) -> None:
+        validate_select("WITH cte AS (SELECT 1) SELECT * FROM cte")
+
+    def test_select_with_multiple_ctes(self) -> None:
+        validate_select("WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a, b")
+
+    def test_select_with_recursive_cte(self) -> None:
+        validate_select(
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n < 10) "
+            "SELECT n FROM t"
+        )
+
+    def test_select_with_window_function(self) -> None:
+        validate_select("SELECT id, row_number() OVER (ORDER BY id) FROM users")
+
+    def test_select_with_aggregate(self) -> None:
+        validate_select("SELECT count(*), status FROM orders GROUP BY status HAVING count(*) > 1")
+
+    def test_select_with_union(self) -> None:
+        validate_select("SELECT 1 UNION SELECT 2")
+
+    def test_select_with_intersect(self) -> None:
+        validate_select("SELECT 1 INTERSECT SELECT 1")
+
+    def test_select_with_except(self) -> None:
+        validate_select("SELECT 1 EXCEPT SELECT 2")
+
+    def test_select_with_limit_offset(self) -> None:
+        validate_select("SELECT * FROM users LIMIT 10 OFFSET 5")
+
+    def test_select_with_order_by(self) -> None:
+        validate_select("SELECT * FROM users ORDER BY created_at DESC NULLS LAST")
+
+    def test_select_with_distinct(self) -> None:
+        validate_select("SELECT DISTINCT status FROM orders")
+
+    def test_select_with_for_share(self) -> None:
+        # FOR SHARE is read-only locking, should parse as SelectStmt
+        validate_select("SELECT * FROM users FOR SHARE")
+
+    def test_select_with_lateral_join(self) -> None:
+        validate_select(
+            "SELECT * FROM users u, LATERAL (SELECT * FROM orders WHERE user_id = u.id) o"
+        )
+
+    def test_select_with_json_operators(self) -> None:
+        validate_select("SELECT data->>'name' FROM events WHERE data @> '{\"type\": \"click\"}'")
+
+    def test_select_with_array_operations(self) -> None:
+        validate_select("SELECT ARRAY[1,2,3] || ARRAY[4,5]")
+
+    def test_select_with_case_expression(self) -> None:
+        validate_select("SELECT CASE WHEN x > 0 THEN 'pos' ELSE 'neg' END FROM t")
+
+    def test_select_with_exists(self) -> None:
+        validate_select("SELECT EXISTS(SELECT 1 FROM users WHERE id = 1)")
+
+    # --- Blocked: multi-statement injection attacks ---
+
+    def test_rejects_select_then_drop(self) -> None:
+        with pytest.raises(ValueError, match="single SQL statement"):
+            validate_select("SELECT 1; DROP TABLE users")
+
+    def test_rejects_rollback_then_create(self) -> None:
+        with pytest.raises(ValueError, match="single SQL statement"):
+            validate_select("ROLLBACK; CREATE TABLE evil(id int)")
+
+    def test_rejects_select_then_insert(self) -> None:
+        with pytest.raises(ValueError, match="single SQL statement"):
+            validate_select("SELECT 1; INSERT INTO users VALUES (1)")
+
+    def test_rejects_select_then_update(self) -> None:
+        with pytest.raises(ValueError, match="single SQL statement"):
+            validate_select("SELECT 1; UPDATE users SET admin = true")
+
+    def test_rejects_select_then_delete(self) -> None:
+        with pytest.raises(ValueError, match="single SQL statement"):
+            validate_select("SELECT 1; DELETE FROM users")
+
+    def test_rejects_commit_then_drop(self) -> None:
+        with pytest.raises(ValueError, match="single SQL statement"):
+            validate_select("COMMIT; DROP TABLE users")
+
+    def test_rejects_three_statements(self) -> None:
+        with pytest.raises(ValueError, match="single SQL statement"):
+            validate_select("SELECT 1; SELECT 2; SELECT 3")
+
+    # --- Blocked: single non-SELECT statements ---
+
+    def test_rejects_insert(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("INSERT INTO users(name) VALUES ('evil')")
+
+    def test_rejects_update(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("UPDATE users SET admin = true")
+
+    def test_rejects_delete(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("DELETE FROM users")
+
+    def test_rejects_drop_table(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("DROP TABLE users")
+
+    def test_rejects_create_table(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("CREATE TABLE evil(id int)")
+
+    def test_rejects_alter_table(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("ALTER TABLE users ADD COLUMN hacked bool")
+
+    def test_rejects_truncate(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("TRUNCATE users")
+
+    def test_rejects_grant(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("GRANT ALL ON users TO evil")
+
+    def test_rejects_copy(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("COPY users TO '/tmp/data.csv'")
+
+    def test_rejects_create_function(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select(
+                "CREATE FUNCTION evil() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql"
+            )
+
+    def test_rejects_do_block(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("DO $$ BEGIN RAISE NOTICE 'hello'; END $$")
+
+    def test_rejects_set(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("SET statement_timeout = 0")
+
+    def test_rejects_rollback(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("ROLLBACK")
+
+    def test_rejects_begin(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("BEGIN")
+
+    def test_rejects_create_index(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("CREATE INDEX idx ON users(id)")
+
+    def test_rejects_drop_index(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("DROP INDEX idx")
+
+    def test_rejects_vacuum(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("VACUUM users")
+
+    def test_rejects_explain(self) -> None:
+        # EXPLAIN wrapping is done internally — user should not pass EXPLAIN
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("EXPLAIN SELECT 1")
+
+    # --- Blocked: invalid SQL ---
+
+    def test_rejects_garbage(self) -> None:
+        with pytest.raises(Exception):
+            validate_select("NOT VALID SQL AT ALL !!!")
+
+    def test_rejects_empty(self) -> None:
+        with pytest.raises(Exception):
+            validate_select("")
+
+    # --- Integration: query() and explain_query() reject bad SQL before hitting DB ---
+
+    async def test_query_rejects_injection(self) -> None:
+        conn = mock_conn(fetch_return=[])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        with pytest.raises(ValueError, match="single SQL statement"):
+            await db.query("SELECT 1; DROP TABLE users")
+
+        # Verify the database was never called
+        conn.fetch.assert_not_called()
+
+    async def test_query_rejects_non_select(self) -> None:
+        conn = mock_conn(fetch_return=[])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        with pytest.raises(ValueError, match="Only SELECT"):
+            await db.query("DELETE FROM users")
+
+        conn.fetch.assert_not_called()
+
+    async def test_explain_rejects_injection(self) -> None:
+        conn = mock_conn(fetch_return=[])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        with pytest.raises(ValueError, match="single SQL statement"):
+            await db.explain_query("SELECT 1; DROP TABLE users")
+
+        conn.fetch.assert_not_called()
+
+    async def test_explain_rejects_non_select(self) -> None:
+        conn = mock_conn(fetch_return=[])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        with pytest.raises(ValueError, match="Only SELECT"):
+            await db.explain_query("INSERT INTO foo VALUES (1)")
+
+        conn.fetch.assert_not_called()
 
 
 class TestListSchemas:
