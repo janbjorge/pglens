@@ -204,9 +204,32 @@ class TestQueryAndExplain:
         result = await db.query("SELECT id, name FROM users")
 
         sql = conn.fetch.call_args[0][0]
-        assert "LIMIT 500" in sql
+        assert "LIMIT $1 OFFSET $2" in sql
         assert "sub" in sql
+        assert conn.fetch.call_args[0][1] == 500
+        assert conn.fetch.call_args[0][2] == 0
         assert result == [{"id": 1, "name": "test"}]
+
+    async def test_query_custom_limit_offset(self) -> None:
+        conn = mock_conn(fetch_return=[make_record(id=2)])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        await db.query("SELECT id FROM users", limit=100, offset=50)
+
+        assert conn.fetch.call_args[0][1] == 100
+        assert conn.fetch.call_args[0][2] == 50
+
+    async def test_query_clamps_limit(self) -> None:
+        conn = mock_conn(fetch_return=[])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        await db.query("SELECT 1", limit=9999)
+        assert conn.fetch.call_args[0][1] == 500
+
+        await db.query("SELECT 1", limit=-5)
+        assert conn.fetch.call_args[0][1] == 1
 
     async def test_explain_returns_plan_text(self) -> None:
         conn = mock_conn(

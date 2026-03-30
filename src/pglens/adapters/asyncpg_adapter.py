@@ -496,10 +496,14 @@ class AsyncpgDatabase:
                 rows = await conn.fetch(f"EXPLAIN (ANALYZE false, FORMAT TEXT) {sql}")
                 return "\n".join(r["QUERY PLAN"] for r in rows)
 
-    async def query(self, sql: str) -> list[dict[str, object]]:
+    async def query(self, sql: str, limit: int = 500, offset: int = 0) -> list[dict[str, object]]:
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
-                rows = await conn.fetch(f"SELECT * FROM ({sql}) sub LIMIT 500")
+                rows = await conn.fetch(
+                    f"SELECT * FROM ({sql}) sub LIMIT $1 OFFSET $2",
+                    min(max(limit, 1), 500),
+                    max(offset, 0),
+                )
                 return [dict(r) for r in rows]
 
     async def list_schemas(self) -> list[dict[str, object]]:
