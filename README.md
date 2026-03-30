@@ -82,7 +82,7 @@ uv pip install pglens
 
 ## Usage
 
-pglens reads standard PostgreSQL environment variables. No config files, no flags.
+pglens reads standard PostgreSQL environment variables.
 
 ```bash
 export PGHOST=localhost
@@ -93,7 +93,15 @@ export PGDATABASE=mydb
 pglens
 ```
 
-The server uses stdio transport.
+By default the server uses stdio transport. To run as an HTTP server for remote use:
+
+```bash
+pglens --transport streamable-http
+```
+
+| Flag | Choices | Default | Description |
+|---|---|---|---|
+| `--transport` | `stdio`, `streamable-http` | `stdio` | MCP transport type |
 
 ### Claude Desktop
 
