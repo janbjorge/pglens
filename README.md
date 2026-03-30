@@ -120,7 +120,11 @@ pglens --transport streamable-http
     "pglens": {
       "command": "pglens",
       "env": {
-        "PGLENS_DSN": "postgresql://myuser:mypassword@localhost:5432/mydb"
+        "PGHOST": "localhost",
+        "PGPORT": "5432",
+        "PGUSER": "myuser",
+        "PGPASSWORD": "mypassword",
+        "PGDATABASE": "mydb"
       }
     }
   }
