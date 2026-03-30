@@ -4,7 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase, validate_select
+from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
+from pglens.core.sql import validate_select
 
 
 def make_record(**kwargs: object) -> MagicMock:
