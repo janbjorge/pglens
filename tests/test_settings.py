@@ -107,12 +107,97 @@ class TestSchemaAllowlist:
         result = await db.list_schemas()
         assert len(result) == 2
 
+    async def test_list_views_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.list_views("secret")
+
     async def test_describe_table_blocked(self) -> None:
         db = self._make_db(schemas=frozenset({"public"}))
         with pytest.raises(ValueError, match="not allowed"):
             await db.describe_table("users", "secret")
 
+    async def test_find_related_tables_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.find_related_tables("users", "secret")
+
+    async def test_find_join_path_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.find_join_path("a", "b", "secret", 4)
+
     async def test_sample_rows_blocked(self) -> None:
         db = self._make_db(schemas=frozenset({"public"}))
         with pytest.raises(ValueError, match="not allowed"):
             await db.sample_rows("users", 5, "secret")
+
+    async def test_column_values_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.column_values("users", "col", 20, "secret")
+
+    async def test_search_data_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.search_data("users", "kw", "secret")
+
+    async def test_search_columns_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.search_columns("kw", "secret")
+
+    async def test_column_stats_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.column_stats("users", "col", "secret")
+
+    async def test_object_dependencies_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.object_dependencies("users", "table", "secret")
+
+    async def test_table_stats_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.table_stats("secret")
+
+    async def test_table_sizes_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.table_sizes("secret")
+
+    async def test_unused_indexes_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.unused_indexes("secret")
+
+    async def test_bloat_stats_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.bloat_stats("secret")
+
+    async def test_list_functions_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.list_functions("secret")
+
+    async def test_list_triggers_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.list_triggers("users", "secret")
+
+    async def test_list_policies_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.list_policies("users", "secret")
+
+    async def test_sequence_health_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.sequence_health("secret")
+
+    async def test_matview_status_blocked(self) -> None:
+        db = self._make_db(schemas=frozenset({"public"}))
+        with pytest.raises(ValueError, match="not allowed"):
+            await db.matview_status("secret")
