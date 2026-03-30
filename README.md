@@ -41,7 +41,7 @@ pglens adds the tools that close those gaps: checking what values actually exist
 | Tool | What it does |
 |---|---|
 | `explain_query` | Query plan without execution |
-| `query` | Read-only SQL, capped at 500 rows |
+| `query` | Read-only SQL with limit/offset pagination (default 500 rows) |
 
 ### Performance and health
 

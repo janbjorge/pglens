@@ -57,3 +57,13 @@ MaxDepth = Annotated[
     "Maximum number of FK hops to traverse (1-6). "
     "Higher values find longer paths but take more time.",
 ]
+
+Limit = Annotated[int, "Maximum number of rows to return (1-500, default 500)"]
+
+Offset = Annotated[
+    int,
+    "Number of rows to skip before returning results (default 0). "
+    "Warning: large offsets cause PostgreSQL to scan and discard rows, degrading performance. "
+    "For paginating large result sets, prefer keyset pagination using WHERE clauses "
+    "(e.g. WHERE id > last_seen_id ORDER BY id) instead of increasing offset.",
+]
