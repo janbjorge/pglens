@@ -8,6 +8,7 @@ license = "MIT"
 dependencies = [
     "asyncpg>=0.29",
     "mcp>=1.0",
+    "pglast>=7.13",
 ]
 
 [project.scripts]

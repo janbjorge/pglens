@@ -6,6 +6,8 @@ from typing import cast
 
 import asyncpg
 
+from pglens.core.sql import validate_select
+
 
 def object_type_to_relkind(object_type: str) -> str:
     match object_type:
@@ -491,12 +493,14 @@ class AsyncpgDatabase:
         ]
 
     async def explain_query(self, sql: str) -> str:
+        validate_select(sql)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 rows = await conn.fetch(f"EXPLAIN (ANALYZE false, FORMAT TEXT) {sql}")
                 return "\n".join(r["QUERY PLAN"] for r in rows)
 
     async def query(self, sql: str, limit: int = 500, offset: int = 0) -> list[dict[str, object]]:
+        validate_select(sql)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 rows = await conn.fetch(

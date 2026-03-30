@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
+from pglens.core.sql import validate_select
 
 
 def make_record(**kwargs: object) -> MagicMock:
@@ -246,6 +247,49 @@ class TestQueryAndExplain:
         assert "Seq Scan on users" in result
         assert "Filter: (id > 0)" in result
         assert "\n" in result
+
+
+class TestValidateSelect:
+    """Tests for SQL parsing defense using pglast (PostgreSQL's own parser)."""
+
+    def test_allows_select(self) -> None:
+        validate_select("SELECT 1")
+
+    def test_allows_cte(self) -> None:
+        validate_select("WITH cte AS (SELECT 1) SELECT * FROM cte")
+
+    def test_allows_union(self) -> None:
+        validate_select("SELECT 1 UNION SELECT 2")
+
+    def test_rejects_multi_statement(self) -> None:
+        with pytest.raises(ValueError, match="single SQL statement"):
+            validate_select("SELECT 1; DROP TABLE users")
+
+    def test_rejects_non_select(self) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            validate_select("DELETE FROM users")
+
+    def test_rejects_invalid_sql(self) -> None:
+        with pytest.raises(Exception):
+            validate_select("NOT VALID SQL")
+
+    async def test_query_validates_before_executing(self) -> None:
+        conn = mock_conn(fetch_return=[])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        with pytest.raises(ValueError):
+            await db.query("SELECT 1; DROP TABLE users")
+        conn.fetch.assert_not_called()
+
+    async def test_explain_validates_before_executing(self) -> None:
+        conn = mock_conn(fetch_return=[])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        with pytest.raises(ValueError):
+            await db.explain_query("DELETE FROM users")
+        conn.fetch.assert_not_called()
 
 
 class TestListSchemas:

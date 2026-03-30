@@ -245,6 +245,62 @@ class TestQueryExecution:
         assert "users" in plan.lower()
 
 
+class TestSQLParsingDefense:
+    """Verify that SQL validation blocks dangerous queries against a real database."""
+
+    async def test_query_allows_select(self, db: AsyncpgDatabase) -> None:
+        result = await db.query("SELECT 1 AS n")
+        assert result == [{"n": 1}]
+
+    async def test_query_allows_cte(self, db: AsyncpgDatabase) -> None:
+        result = await db.query("WITH cte AS (SELECT 1 AS n) SELECT * FROM cte")
+        assert result == [{"n": 1}]
+
+    async def test_query_blocks_multi_statement(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="single SQL statement"):
+            await db.query("SELECT 1; DROP TABLE users")
+
+    async def test_query_blocks_insert(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            await db.query("INSERT INTO users(username, email) VALUES ('evil', 'e@e.com')")
+
+    async def test_query_blocks_update(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            await db.query("UPDATE users SET username = 'hacked'")
+
+    async def test_query_blocks_delete(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            await db.query("DELETE FROM users")
+
+    async def test_query_blocks_drop(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            await db.query("DROP TABLE users")
+
+    async def test_query_blocks_rollback_attack(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="single SQL statement"):
+            await db.query("ROLLBACK; CREATE TABLE evil(id int)")
+
+    async def test_explain_blocks_non_select(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="Only SELECT"):
+            await db.explain_query("DELETE FROM users")
+
+    async def test_data_unchanged_after_blocked_attacks(self, db: AsyncpgDatabase) -> None:
+        """Verify that blocked attacks didn't modify data."""
+        # Try several attacks, all should be blocked before reaching the DB
+        for sql in [
+            "DELETE FROM users",
+            "UPDATE users SET username = 'hacked'",
+            "INSERT INTO users(username, email) VALUES ('evil', 'e@e.com')",
+            "SELECT 1; DELETE FROM users",
+        ]:
+            with pytest.raises(ValueError):
+                await db.query(sql)
+
+        # Verify data is intact
+        result = await db.query("SELECT count(*) AS n FROM users")
+        assert result[0]["n"] == 3
+
+
 class TestHealthMonitoring:
     async def test_table_stats(self, db: AsyncpgDatabase) -> None:
         stats = await db.table_stats("public")
