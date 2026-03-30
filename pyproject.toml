@@ -9,6 +9,7 @@ dependencies = [
     "asyncpg>=0.29",
     "mcp>=1.0",
     "pglast>=7.13",
+    "pydantic-settings>=2.0",
 ]
 
 [project.scripts]
@@ -53,3 +54,4 @@ not-subscriptable = "ignore"
 unsupported-operator = "ignore"
 not-iterable = "ignore"
 invalid-argument-type = "ignore"
+unresolved-attribute = "ignore"

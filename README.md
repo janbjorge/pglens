@@ -108,9 +108,27 @@ By default the server uses stdio transport. To run as an HTTP server for remote 
 pglens --transport streamable-http
 ```
 
-| Flag | Choices | Default | Description |
+### Schema allowlist
+
+By default all non-system schemas are visible. To restrict which schemas the agent can see and query, set `PGLENS_SCHEMAS`:
+
+```bash
+export PGLENS_SCHEMAS="public,app"
+pglens
+```
+
+Or via the CLI flag (overrides the env var):
+
+```bash
+pglens --schemas public,app
+```
+
+When set, `list_schemas` only returns allowed schemas, and all schema-accepting tools reject schemas not on the list.
+
+| Flag | Environment variable | Default | Description |
 |---|---|---|---|
-| `--transport` | `stdio`, `streamable-http` | `stdio` | MCP transport type |
+| `--transport` | — | `stdio` | MCP transport type (`stdio`, `streamable-http`) |
+| `--schemas` | `PGLENS_SCHEMAS` | all visible | Comma-separated list of allowed schemas |
 
 ### Claude Desktop
 

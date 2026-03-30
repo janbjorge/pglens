@@ -1,11 +1,12 @@
 """Query class backed by asyncpg."""
 
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 import asyncpg
 
+from pglens.core.settings import Settings
 from pglens.core.sql import validate_select
 
 
@@ -28,6 +29,13 @@ def object_type_to_relkind(object_type: str) -> str:
 @dataclass
 class AsyncpgDatabase:
     pool: asyncpg.Pool
+    settings: Settings = field(default_factory=Settings)
+
+    def check_schema_allowed(self, schema: str) -> None:
+        allowed = self.settings.schemas
+        if allowed is not None and schema not in allowed:
+            allowed_str = ", ".join(sorted(allowed))
+            raise ValueError(f"Schema {schema!r} is not allowed. Allowed schemas: {allowed_str}")
 
     async def safe_table_ref(self, schema: str, table_name: str) -> str:
         return cast(
@@ -43,6 +51,7 @@ class AsyncpgDatabase:
         return cast(str, await self.pool.fetchval("SELECT quote_ident($1)", column_name))
 
     async def list_tables(self, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -64,6 +73,7 @@ class AsyncpgDatabase:
         ]
 
     async def list_views(self, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -99,6 +109,7 @@ class AsyncpgDatabase:
         ]
 
     async def describe_table(self, table_name: str, schema: str) -> dict[str, object]:
+        self.check_schema_allowed(schema)
         ref = await self.safe_table_ref(schema, table_name)
 
         columns = [
@@ -207,6 +218,7 @@ class AsyncpgDatabase:
         }
 
     async def find_related_tables(self, table_name: str, schema: str) -> dict[str, object]:
+        self.check_schema_allowed(schema)
         references = [
             dict(r)
             for r in await self.pool.fetch(
@@ -274,6 +286,7 @@ class AsyncpgDatabase:
     async def find_join_path(
         self, source_table: str, target_table: str, schema: str, max_depth: int
     ) -> dict[str, object]:
+        self.check_schema_allowed(schema)
         max_depth = min(max(max_depth, 1), 6)
 
         fk_rows = await self.pool.fetch(
@@ -364,6 +377,7 @@ class AsyncpgDatabase:
         }
 
     async def sample_rows(self, table_name: str, n: int, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         ref = await self.safe_table_ref(schema, table_name)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
@@ -376,6 +390,7 @@ class AsyncpgDatabase:
     async def column_values(
         self, table_name: str, column_name: str, top_n: int, schema: str
     ) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         ref = await self.safe_table_ref(schema, table_name)
         col = await self.safe_column_ref(column_name)
         async with self.pool.acquire() as conn:
@@ -399,6 +414,7 @@ class AsyncpgDatabase:
     async def search_data(
         self, table_name: str, keyword: str, schema: str
     ) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         text_cols = await self.pool.fetch(
             """
             SELECT quote_ident(column_name) AS safe_name
@@ -428,6 +444,7 @@ class AsyncpgDatabase:
                 return [dict(r) for r in rows]
 
     async def search_columns(self, keyword: str, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return [
             dict(r)
@@ -464,6 +481,7 @@ class AsyncpgDatabase:
         ]
 
     async def table_stats(self, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -511,7 +529,7 @@ class AsyncpgDatabase:
                 return [dict(r) for r in rows]
 
     async def list_schemas(self) -> list[dict[str, object]]:
-        return [
+        rows = [
             dict(r)
             for r in await self.pool.fetch(
                 """
@@ -531,10 +549,15 @@ class AsyncpgDatabase:
                 """
             )
         ]
+        allowed = self.settings.schemas
+        if allowed is not None:
+            rows = [r for r in rows if r["schema_name"] in allowed]
+        return rows
 
     async def column_stats(
         self, table_name: str, column_name: str, schema: str
     ) -> dict[str, object]:
+        self.check_schema_allowed(schema)
         ref = await self.safe_table_ref(schema, table_name)
         col = await self.safe_column_ref(column_name)
         stats = await self.pool.fetchrow(
@@ -595,6 +618,7 @@ class AsyncpgDatabase:
     async def object_dependencies(
         self, object_name: str, object_type: str, schema: str
     ) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         if object_type == "function":
             return [
                 dict(r)
@@ -751,6 +775,7 @@ class AsyncpgDatabase:
     # -- Size & bloat analysis --
 
     async def table_sizes(self, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -771,6 +796,7 @@ class AsyncpgDatabase:
         ]
 
     async def unused_indexes(self, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -795,6 +821,7 @@ class AsyncpgDatabase:
         ]
 
     async def bloat_stats(self, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -829,6 +856,7 @@ class AsyncpgDatabase:
     # -- Functions, triggers, policies --
 
     async def list_functions(self, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -863,6 +891,7 @@ class AsyncpgDatabase:
         ]
 
     async def list_triggers(self, table_name: str, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         ref = await self.safe_table_ref(schema, table_name)
         return [
             dict(r)
@@ -889,6 +918,7 @@ class AsyncpgDatabase:
         ]
 
     async def list_policies(self, table_name: str, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -927,6 +957,7 @@ class AsyncpgDatabase:
     # -- Sequences & materialized view health --
 
     async def sequence_health(self, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -954,6 +985,7 @@ class AsyncpgDatabase:
         ]
 
     async def matview_status(self, schema: str) -> list[dict[str, object]]:
+        self.check_schema_allowed(schema)
         return [
             dict(r)
             for r in await self.pool.fetch(

@@ -1,6 +1,5 @@
 """MCP server backed by asyncpg."""
 
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -9,18 +8,23 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
+from pglens.core.settings import Settings
 
 Ctx = Context[ServerSession, AsyncpgDatabase, object]
 
 
-@asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[AsyncpgDatabase]:
-    dsn = os.environ.get("PGLENS_DSN")
-    async with asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5) as pool:
-        yield AsyncpgDatabase(pool)
+mcp = FastMCP("pglens")
 
 
-mcp = FastMCP("pglens", lifespan=app_lifespan)
+def configure(settings: Settings) -> None:
+    """Bind a Settings instance to the MCP server lifespan. Call before mcp.run()."""
+
+    @asynccontextmanager
+    async def app_lifespan(server: FastMCP) -> AsyncIterator[AsyncpgDatabase]:
+        async with asyncpg.create_pool(dsn=settings.dsn, min_size=1, max_size=5) as pool:
+            yield AsyncpgDatabase(pool, settings=settings)
+
+    mcp.settings.lifespan = app_lifespan
 
 
 def db(ctx: Ctx) -> AsyncpgDatabase:
