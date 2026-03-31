@@ -67,6 +67,88 @@ class TestSafeRefs:
         pool.fetchval.assert_called_once_with("SELECT quote_ident($1)", "status")
 
 
+class TestDatabaseInfo:
+    async def test_database_info_returns_dict(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+        pool.fetchrow.return_value = make_record(
+            database_name="mydb",
+            current_user="postgres",
+            version="PostgreSQL 16.2",
+            server_version="16.2",
+            server_encoding="UTF8",
+            timezone="UTC",
+            max_connections="100",
+            server_start_time="2024-01-01T00:00:00Z",
+            uptime="1 day",
+            database_size="50 MB",
+            database_size_bytes=52428800,
+        )
+        result = await db.database_info()
+        assert result["database_name"] == "mydb"
+        assert result["server_version"] == "16.2"
+        assert result["max_connections"] == "100"
+        assert result["database_size_bytes"] == 52428800
+
+    async def test_database_info_empty_row(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+        pool.fetchrow.return_value = None
+        result = await db.database_info()
+        assert result == {}
+
+
+class TestListIndexes:
+    async def test_list_indexes_returns_dicts(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+        pool.fetch.return_value = [
+            make_record(
+                index_name="users_pkey",
+                table_name="users",
+                is_unique=True,
+                is_primary=True,
+                index_type="btree",
+                definition="CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)",
+                index_size="16 kB",
+                index_size_bytes=16384,
+                scans_since_reset=100,
+                tuples_read=500,
+                tuples_fetched=500,
+            ),
+        ]
+        result = await db.list_indexes("public")
+        assert len(result) == 1
+        assert result[0]["index_name"] == "users_pkey"
+        assert result[0]["is_primary"] is True
+        assert result[0]["index_type"] == "btree"
+
+    async def test_list_indexes_empty(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+        pool.fetch.return_value = []
+        result = await db.list_indexes("public")
+        assert result == []
+
+
+class TestTableRowCounts:
+    async def test_table_row_counts_returns_exact(self) -> None:
+        conn = mock_conn()
+        pool = mock_pool_with_conn(conn)
+        pool.fetchval.return_value = '"public"."users"'
+        conn.fetchrow.return_value = make_record(exact_count=42)
+        db = AsyncpgDatabase(pool=pool)
+
+        result = await db.table_row_counts("users", "public")
+        assert result["table"] == "public.users"
+        assert result["exact_count"] == 42
+
+    async def test_table_row_counts_uses_readonly_transaction(self) -> None:
+        conn = mock_conn()
+        pool = mock_pool_with_conn(conn)
+        pool.fetchval.return_value = '"public"."users"'
+        conn.fetchrow.return_value = make_record(exact_count=0)
+        db = AsyncpgDatabase(pool=pool)
+
+        await db.table_row_counts("users", "public")
+
+        # Verify the SQL contains count(*)
+        sql = conn.fetchrow.call_args[0][0]
+        assert "count(*)" in sql.lower()
+
+
 class TestListMethods:
     async def test_list_tables_returns_dicts(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
         pool.fetch.return_value = [

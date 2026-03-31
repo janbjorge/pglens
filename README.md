@@ -14,6 +14,7 @@ pglens adds the tools that close those gaps: checking what values actually exist
 
 | Tool | What it does |
 |---|---|
+| `database_info` | Server version, database name, current user, encoding, timezone, uptime, size |
 | `list_schemas` | Schemas with table and view counts |
 | `list_tables` | Tables with row counts and descriptions |
 | `list_views` | Views with their SQL definitions |
@@ -21,6 +22,7 @@ pglens adds the tools that close those gaps: checking what values actually exist
 | `describe_table` | Columns, types, PKs, FKs, indexes, check constraints |
 | `find_related_tables` | FK relationships in both directions |
 | `find_join_path` | Multi-hop join paths between two tables via foreign keys |
+| `list_indexes` | All indexes across a schema with types, sizes, and usage stats |
 | `list_functions` | Stored functions/procedures with source code |
 | `list_triggers` | Triggers on a table with definitions and status |
 | `list_policies` | Row-level security policies on a table |
@@ -29,6 +31,7 @@ pglens adds the tools that close those gaps: checking what values actually exist
 
 | Tool | What it does |
 |---|---|
+| `table_row_counts` | Exact row count via COUNT(*) (vs estimated in list_tables) |
 | `sample_rows` | Random rows from a table |
 | `column_values` | Distinct values with frequency counts |
 | `column_stats` | Min, max, null fraction, distinct count, common values |

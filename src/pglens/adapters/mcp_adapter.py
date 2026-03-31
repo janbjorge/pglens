@@ -36,29 +36,34 @@ You are connected to a PostgreSQL database via MCP tools.
 
 Suggested workflow:
 
-1. `list_schemas` -- discover what schemas exist (not just public).
-2. `list_tables` -- see what exists (names, row counts, descriptions).
-3. `describe_table` -- get column names, types, PKs, FKs, indexes.
-4. `find_related_tables` -- discover direct FK relationships.
+1. `database_info` -- check Postgres version, database name, current user.
+2. `list_schemas` -- discover what schemas exist (not just public).
+3. `list_tables` -- see what exists (names, estimated row counts, descriptions).
+4. `describe_table` -- get column names, types, PKs, FKs, indexes.
+5. `find_related_tables` -- discover direct FK relationships.
    `find_join_path` -- find how to JOIN two tables that are multiple
    FKs apart, with exact join conditions for each hop.
-5. `column_values` -- check actual values in low-cardinality columns
+6. `column_values` -- check actual values in low-cardinality columns
    (status, type, category) before writing WHERE clauses.
    `column_stats` -- get min/max/nulls/distribution for numeric or
    date columns where column_values would return too many values.
    `search_enum_values` -- check enum values before filtering.
-6. `sample_rows` -- see real data, NULL patterns, value formats.
-7. `search_columns` -- find a column by name across all tables.
+7. `sample_rows` -- see real data, NULL patterns, value formats.
+8. `search_columns` -- find a column by name across all tables.
    `search_data` -- find rows matching a keyword across text columns.
-8. `explain_query` -- check the query plan before running expensive queries.
-9. `query` -- run read-only SQL (capped at 500 rows).
+9. `explain_query` -- check the query plan before running expensive queries.
+10. `query` -- run read-only SQL (capped at 500 rows).
 
 Schema and discovery:
 - `list_views` -- views often have complex joins already done.
 - `list_extensions` -- check for PostGIS, pg_trgm, etc.
+- `list_indexes` -- all indexes across the schema with types, sizes, usage stats.
 - `list_functions` -- stored functions/procedures and their source code.
 - `list_triggers` -- triggers on a table (can silently modify data).
 - `list_policies` -- row-level security policies (can silently filter rows).
+
+Data validation:
+- `table_row_counts` -- exact row count via COUNT(*) when estimates aren't enough.
 
 Safety before DDL changes:
 - `object_dependencies` -- what views, functions, constraints depend on an

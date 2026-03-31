@@ -11,6 +11,16 @@ from pglens.core.types import (
 
 
 @mcp.tool()
+async def database_info(ctx: Ctx) -> dict[str, object]:
+    """Get PostgreSQL server and database identity: version, database name, current user,
+    encoding, timezone, max_connections, uptime, and total database size.
+    Call this first when you need to know the Postgres version (to use version-appropriate
+    SQL syntax), verify which database you are connected to, or check server capacity.
+    """
+    return await db(ctx).database_info()
+
+
+@mcp.tool()
 async def list_schemas(ctx: Ctx) -> list[dict[str, object]]:
     """List all user-visible schemas with table and view counts.
     Call this first to discover non-public schemas before exploring tables.
@@ -77,6 +87,17 @@ async def find_join_path(
     across tables that are multiple foreign keys apart.
     """
     return await db(ctx).find_join_path(source_table, target_table, schema, max_depth)
+
+
+@mcp.tool()
+async def list_indexes(ctx: Ctx, schema: Schema = "public") -> list[dict[str, object]]:
+    """List all indexes across every table in the schema: name, table, type (btree/hash/gin/gist),
+    uniqueness, full CREATE INDEX definition, size on disk, and usage stats (scans, tuples read).
+    Use this to audit indexing strategy across the whole schema — unlike describe_table which
+    shows indexes for one table, this gives you the big picture. Combine with unused_indexes
+    to find waste, or with explain_query to verify a query uses the index you expect.
+    """
+    return await db(ctx).list_indexes(schema)
 
 
 @mcp.tool()
