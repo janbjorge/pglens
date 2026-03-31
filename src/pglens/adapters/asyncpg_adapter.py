@@ -42,6 +42,66 @@ class AsyncpgDatabase:
     async def safe_column_ref(self, column_name: str) -> str:
         return cast(str, await self.pool.fetchval("SELECT quote_ident($1)", column_name))
 
+    async def database_info(self) -> dict[str, object]:
+        row = await self.pool.fetchrow(
+            """
+            SELECT
+                current_database() AS database_name,
+                current_user AS current_user,
+                version() AS version,
+                current_setting('server_version') AS server_version,
+                current_setting('server_encoding') AS server_encoding,
+                current_setting('TimeZone') AS timezone,
+                current_setting('max_connections') AS max_connections,
+                pg_postmaster_start_time() AS server_start_time,
+                now() - pg_postmaster_start_time() AS uptime,
+                pg_size_pretty(pg_database_size(current_database())) AS database_size,
+                pg_database_size(current_database()) AS database_size_bytes
+            """
+        )
+        return dict(row) if row else {}
+
+    async def list_indexes(self, schema: str) -> list[dict[str, object]]:
+        return [
+            dict(r)
+            for r in await self.pool.fetch(
+                """
+                SELECT
+                    i.relname AS index_name,
+                    t.relname AS table_name,
+                    ix.indisunique AS is_unique,
+                    ix.indisprimary AS is_primary,
+                    am.amname AS index_type,
+                    pg_get_indexdef(ix.indexrelid) AS definition,
+                    pg_size_pretty(pg_relation_size(ix.indexrelid)) AS index_size,
+                    pg_relation_size(ix.indexrelid) AS index_size_bytes,
+                    s.idx_scan AS scans_since_reset,
+                    s.idx_tup_read AS tuples_read,
+                    s.idx_tup_fetch AS tuples_fetched
+                FROM pg_index ix
+                JOIN pg_class i ON i.oid = ix.indexrelid
+                JOIN pg_class t ON t.oid = ix.indrelid
+                JOIN pg_namespace n ON t.relnamespace = n.oid
+                JOIN pg_am am ON i.relam = am.oid
+                LEFT JOIN pg_stat_user_indexes s
+                    ON s.indexrelid = ix.indexrelid
+                WHERE n.nspname = $1
+                ORDER BY t.relname, i.relname
+                """,
+                schema,
+            )
+        ]
+
+    async def table_row_counts(self, table_name: str, schema: str) -> dict[str, object]:
+        ref = await self.safe_table_ref(schema, table_name)
+        async with self.pool.acquire() as conn:
+            async with conn.transaction(readonly=True):
+                row = await conn.fetchrow(f"SELECT count(*) AS exact_count FROM {ref}")
+                return {
+                    "table": f"{schema}.{table_name}",
+                    "exact_count": row["exact_count"] if row else 0,
+                }
+
     async def list_tables(self, schema: str) -> list[dict[str, object]]:
         return [
             dict(r)

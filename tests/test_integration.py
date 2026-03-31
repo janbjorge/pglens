@@ -17,6 +17,19 @@ from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
 pytestmark = pytest.mark.usefixtures("pool")
 
 
+class TestDatabaseInfo:
+    async def test_database_info(self, db: AsyncpgDatabase) -> None:
+        info = await db.database_info()
+        assert info["database_name"] is not None
+        assert info["current_user"] is not None
+        assert "PostgreSQL" in str(info["version"])
+        assert info["server_version"] is not None
+        assert info["server_encoding"] is not None
+        assert info["timezone"] is not None
+        assert int(info["max_connections"]) > 0
+        assert info["database_size_bytes"] > 0
+
+
 class TestSchemaDiscovery:
     async def test_list_schemas(self, db: AsyncpgDatabase) -> None:
         schemas = await db.list_schemas()
@@ -57,6 +70,31 @@ class TestSchemaDiscovery:
         extensions = await db.list_extensions()
         names = [e["extname"] for e in extensions]
         assert "plpgsql" in names
+
+    async def test_list_indexes(self, db: AsyncpgDatabase) -> None:
+        indexes = await db.list_indexes("public")
+        assert len(indexes) >= 1
+        # Should include primary key indexes
+        pkey_indexes = [i for i in indexes if i["is_primary"]]
+        assert len(pkey_indexes) >= 1
+        # Should include our manually created index
+        idx_names = [i["index_name"] for i in indexes]
+        assert "idx_users_bio" in idx_names
+        # Each index should have type info
+        bio_idx = next(i for i in indexes if i["index_name"] == "idx_users_bio")
+        assert bio_idx["index_type"] == "btree"
+        assert bio_idx["table_name"] == "users"
+        assert bio_idx["is_unique"] is False
+        assert bio_idx["is_primary"] is False
+        assert bio_idx["index_size"] is not None
+
+    async def test_list_indexes_covers_all_tables(self, db: AsyncpgDatabase) -> None:
+        indexes = await db.list_indexes("public")
+        tables_with_indexes = {i["table_name"] for i in indexes}
+        # At minimum, tables with PKs should appear
+        assert "users" in tables_with_indexes
+        assert "orders" in tables_with_indexes
+        assert "products" in tables_with_indexes
 
     async def test_list_functions(self, db: AsyncpgDatabase) -> None:
         functions = await db.list_functions("public")
@@ -176,6 +214,16 @@ class TestRelationships:
 
 
 class TestDataExploration:
+    async def test_table_row_counts(self, db: AsyncpgDatabase) -> None:
+        result = await db.table_row_counts("users", "public")
+        assert result["table"] == "public.users"
+        assert result["exact_count"] == 3  # We inserted 3 users
+
+    async def test_table_row_counts_empty_table(self, db: AsyncpgDatabase) -> None:
+        """shipping_regions has 2 rows; order_items has 3."""
+        result = await db.table_row_counts("order_items", "public")
+        assert result["exact_count"] == 3
+
     async def test_sample_rows(self, db: AsyncpgDatabase) -> None:
         rows = await db.sample_rows("users", 10, "public")
         assert len(rows) == 3  # We inserted 3 users

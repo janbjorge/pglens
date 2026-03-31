@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is pglens?
 
-A Model Context Protocol (MCP) server that gives AI agents read-only introspection into PostgreSQL databases. 25 tools across schema discovery, data exploration, query execution, and performance monitoring — all using `pg_catalog` with no extensions required.
+A Model Context Protocol (MCP) server that gives AI agents read-only introspection into PostgreSQL databases. 28 tools across schema discovery, data exploration, query execution, and performance monitoring — all using `pg_catalog` with no extensions required.
 
 ## Commands
 

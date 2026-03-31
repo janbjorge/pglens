@@ -16,6 +16,7 @@ from pglens.adapters.mcp_adapter import mcp
 # Every tool that should be registered, mapped to the db method it delegates to.
 EXPECTED_TOOLS: dict[str, str] = {
     # schema.py
+    "database_info": "database_info",
     "list_schemas": "list_schemas",
     "list_tables": "list_tables",
     "list_views": "list_views",
@@ -23,10 +24,12 @@ EXPECTED_TOOLS: dict[str, str] = {
     "describe_table": "describe_table",
     "find_related_tables": "find_related_tables",
     "find_join_path": "find_join_path",
+    "list_indexes": "list_indexes",
     "list_functions": "list_functions",
     "list_triggers": "list_triggers",
     "list_policies": "list_policies",
     # exploration.py
+    "table_row_counts": "table_row_counts",
     "sample_rows": "sample_rows",
     "column_values": "column_values",
     "column_stats": "column_stats",
@@ -82,6 +85,7 @@ class TestToolWiring:
     @pytest.mark.parametrize(
         "tool_name, db_method, kwargs",
         [
+            ("database_info", "database_info", {}),
             ("list_schemas", "list_schemas", {}),
             ("list_tables", "list_tables", {"schema": "public"}),
             ("list_views", "list_views", {"schema": "myschema"}),
@@ -102,9 +106,15 @@ class TestToolWiring:
                     "max_depth": 4,
                 },
             ),
+            ("list_indexes", "list_indexes", {"schema": "public"}),
             ("list_functions", "list_functions", {"schema": "public"}),
             ("list_triggers", "list_triggers", {"table_name": "orders", "schema": "public"}),
             ("list_policies", "list_policies", {"table_name": "orders", "schema": "public"}),
+            (
+                "table_row_counts",
+                "table_row_counts",
+                {"table_name": "users", "schema": "public"},
+            ),
             (
                 "sample_rows",
                 "sample_rows",
