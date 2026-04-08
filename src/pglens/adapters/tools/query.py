@@ -1,15 +1,22 @@
 """Query execution tools."""
 
 from pglens.adapters.mcp_adapter import Ctx, db, mcp
-from pglens.core.types import SQL, Limit, Offset
+from pglens.core.types import SQL, Analyze, Buffers, Limit, Offset
 
 
 @mcp.tool()
-async def explain_query(ctx: Ctx, sql: SQL) -> str:
-    """Get the EXPLAIN plan for a query without executing it.
+async def explain_query(
+    ctx: Ctx,
+    sql: SQL,
+    analyze: Analyze = False,
+    buffers: Buffers = False,
+) -> str:
+    """Get the EXPLAIN plan for a SQL query.
     Use to check whether a query will use indexes before running it.
+    With analyze=True, actually executes the query to show real timings and row counts.
+    With buffers=True (requires analyze=True), shows buffer/cache hit statistics.
     """
-    return await db(ctx).explain_query(sql)
+    return await db(ctx).explain_query(sql, analyze=analyze, buffers=buffers)
 
 
 @mcp.tool()

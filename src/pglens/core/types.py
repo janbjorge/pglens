@@ -58,6 +58,16 @@ MaxDepth = Annotated[
     "Higher values find longer paths but take more time.",
 ]
 
+Analyze = Annotated[
+    bool,
+    "When true, actually execute the query to show real timings and row counts. Default false.",
+]
+
+Buffers = Annotated[
+    bool,
+    "When true (requires analyze=True), show buffer usage and cache hit statistics. Default false.",
+]
+
 Limit = Annotated[int, "Maximum number of rows to return (1-500, default 500)"]
 
 Offset = Annotated[

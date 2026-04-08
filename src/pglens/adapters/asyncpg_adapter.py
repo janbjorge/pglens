@@ -552,11 +552,17 @@ class AsyncpgDatabase:
             )
         ]
 
-    async def explain_query(self, sql: str) -> str:
+    async def explain_query(
+        self,
+        sql: str,
+        analyze: bool = False,
+        buffers: bool = False,
+    ) -> str:
         validate_select(sql)
+        options = f"ANALYZE {analyze}, BUFFERS {buffers}, FORMAT TEXT"
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
-                rows = await conn.fetch(f"EXPLAIN (ANALYZE false, FORMAT TEXT) {sql}")
+                rows = await conn.fetch(f"EXPLAIN ({options}) {sql}")
                 return "\n".join(r["QUERY PLAN"] for r in rows)
 
     async def query(self, sql: str, limit: int = 500, offset: int = 0) -> list[dict[str, object]]:
