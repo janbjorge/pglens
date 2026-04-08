@@ -330,6 +330,39 @@ class TestQueryAndExplain:
         assert "Filter: (id > 0)" in result
         assert "\n" in result
 
+    async def test_explain_default_options(self) -> None:
+        conn = mock_conn(fetch_return=[make_record(**{"QUERY PLAN": "Seq Scan"})])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        await db.explain_query("SELECT 1")
+
+        sql_arg = conn.fetch.call_args[0][0]
+        assert "ANALYZE False" in sql_arg
+        assert "BUFFERS False" in sql_arg
+
+    async def test_explain_with_analyze(self) -> None:
+        conn = mock_conn(fetch_return=[make_record(**{"QUERY PLAN": "Seq Scan"})])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        await db.explain_query("SELECT 1", analyze=True)
+
+        sql_arg = conn.fetch.call_args[0][0]
+        assert "ANALYZE True" in sql_arg
+        assert "BUFFERS False" in sql_arg
+
+    async def test_explain_with_analyze_and_buffers(self) -> None:
+        conn = mock_conn(fetch_return=[make_record(**{"QUERY PLAN": "Seq Scan"})])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        await db.explain_query("SELECT 1", analyze=True, buffers=True)
+
+        sql_arg = conn.fetch.call_args[0][0]
+        assert "ANALYZE True" in sql_arg
+        assert "BUFFERS True" in sql_arg
+
 
 class TestValidateSelect:
     """Tests for SQL parsing defense using pglast (PostgreSQL's own parser)."""
