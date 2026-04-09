@@ -384,6 +384,12 @@ class TestValidateSelect:
         with pytest.raises(ValueError, match="Only SELECT"):
             validate_select("DELETE FROM users")
 
+    def test_allows_declare_cursor_with_select(self) -> None:
+        validate_select("DECLARE cur CURSOR FOR SELECT 1")
+
+    def test_allows_declare_cursor_with_cte(self) -> None:
+        validate_select("DECLARE cur CURSOR FOR WITH cte AS (SELECT 1) SELECT * FROM cte")
+
     def test_rejects_invalid_sql(self) -> None:
         with pytest.raises(Exception):
             validate_select("NOT VALID SQL")
