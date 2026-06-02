@@ -14,10 +14,10 @@ from pglens.core.types import (
 @mcp.tool()
 async def list_databases(ctx: Ctx) -> list[str]:
     """List configured database aliases that can be passed as the `database` argument.
-    Aliases come from PGLENS_DATABASES (comma-separated dbnames sharing libpq env
-    credentials, e.g. `PGLENS_DATABASES=app,azure_sys`). With no PGLENS_DATABASES set,
-    a single 'default' alias relies on PGDATABASE. Use this to discover targets such
-    as Azure's `azure_sys` system-metric database.
+    The first alias is the primary (PGDATABASE) and is used when `database` is omitted.
+    Extra aliases come from PGLENS_DATABASES (comma-separated dbnames on the same host,
+    sharing the libpq env credentials). Use this to discover targets such as Azure's
+    `azure_sys` system-metric database.
     """
     return databases(ctx).names()
 

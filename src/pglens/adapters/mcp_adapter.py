@@ -41,32 +41,36 @@ Ctx = Context[ServerSession, Databases, object]
 def _collect_databases() -> tuple[list[str], str]:
     """Resolve configured aliases and default alias from env.
 
-    ``PGLENS_DATABASES=a,b,c`` lists one alias per Postgres dbname. Host,
-    user, password, ssl mode and other connection params come from the
-    standard libpq env vars (``PGHOST``, ``PGUSER``, ``PGPASSWORD``,
-    ``PGSSLMODE``, ...), which asyncpg reads natively. The same libpq
-    credentials are shared by every alias.
+    Configuration uses libpq env vars only (no connection strings):
 
-    If ``PGLENS_DATABASES`` is unset, a single ``default`` alias is
-    configured that relies entirely on libpq env (including ``PGDATABASE``).
+    - ``PGDATABASE`` is the primary alias and the default target when a tool
+      is called without ``database=``. ``PGHOST``, ``PGUSER``, ``PGPASSWORD``,
+      ``PGSSLMODE`` (etc.) supply host and credentials shared by every pool.
+    - ``PGLENS_DATABASES=a,b,c`` lists additional dbnames on the same host
+      that get their own pool/alias. Entries equal to ``PGDATABASE`` are
+      deduplicated.
 
-    Default alias: ``PGLENS_DEFAULT_DB`` if it points at a configured alias;
-    otherwise the first listed alias (or ``default`` in the fallback case).
+    If neither ``PGDATABASE`` nor ``PGLENS_DATABASES`` is set, a single
+    ``default`` alias is configured that relies entirely on libpq's own
+    default behavior (e.g. dbname = ``PGUSER``).
+
+    Aliases are lowercased.
     """
+    primary = os.environ.get("PGDATABASE", "").strip().lower() or None
+
+    extras: list[str] = []
     raw = os.environ.get("PGLENS_DATABASES", "").strip()
-    names: list[str] = []
     if raw:
         for part in raw.split(","):
             name = part.strip().lower()
-            if name and name not in names:
-                names.append(name)
+            if name and name not in extras and name != primary:
+                extras.append(name)
 
-    if not names:
-        return [DEFAULT_DB], DEFAULT_DB
-
-    requested = os.environ.get("PGLENS_DEFAULT_DB", "").strip().lower()
-    default_alias = requested if requested in names else names[0]
-    return names, default_alias
+    if primary is not None:
+        return [primary, *extras], primary
+    if extras:
+        return extras, extras[0]
+    return [DEFAULT_DB], DEFAULT_DB
 
 
 @asynccontextmanager

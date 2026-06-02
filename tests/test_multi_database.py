@@ -20,7 +20,7 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
     import os as _os
 
     for key in list(_os.environ):
-        if key.startswith("PGLENS_"):
+        if key.startswith("PGLENS_") or key == "PGDATABASE":
             monkeypatch.delenv(key, raising=False)
 
 
@@ -58,35 +58,48 @@ class TestCollectDatabases:
         assert names == [DEFAULT_DB]
         assert default == DEFAULT_DB
 
-    def test_pglens_databases_lists_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_pgdatabase_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGDATABASE", "app")
+        names, default = _collect_databases()
+        assert names == ["app"]
+        assert default == "app"
+
+    def test_pgdatabase_plus_extras(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGDATABASE", "app")
+        monkeypatch.setenv("PGLENS_DATABASES", "azure_sys, Analytics")
+        names, default = _collect_databases()
+        assert names == ["app", "azure_sys", "analytics"]
+        assert default == "app"
+
+    def test_pgdatabase_dedupes_from_extras(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGDATABASE", "app")
+        monkeypatch.setenv("PGLENS_DATABASES", "app,azure_sys")
+        names, _ = _collect_databases()
+        assert names == ["app", "azure_sys"]
+
+    def test_extras_only_without_pgdatabase(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _clear_env(monkeypatch)
         monkeypatch.setenv("PGLENS_DATABASES", "app, azure_sys ,Analytics")
         names, default = _collect_databases()
+        # Without PGDATABASE the first listed alias becomes the default.
         assert names == ["app", "azure_sys", "analytics"]
-        # No PGLENS_DEFAULT_DB -> first listed wins.
         assert default == "app"
 
-    def test_pglens_databases_dedupes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_pglens_databases_dedupes_itself(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _clear_env(monkeypatch)
         monkeypatch.setenv("PGLENS_DATABASES", "app,app,azure_sys")
         names, _ = _collect_databases()
         assert names == ["app", "azure_sys"]
 
-    def test_pglens_default_db_selects_alias(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_pgdatabase_lowercased(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _clear_env(monkeypatch)
-        monkeypatch.setenv("PGLENS_DATABASES", "app,azure_sys")
-        monkeypatch.setenv("PGLENS_DEFAULT_DB", "azure_sys")
-        _, default = _collect_databases()
-        assert default == "azure_sys"
-
-    def test_pglens_default_db_unknown_alias_falls_back(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _clear_env(monkeypatch)
-        monkeypatch.setenv("PGLENS_DATABASES", "app,azure_sys")
-        monkeypatch.setenv("PGLENS_DEFAULT_DB", "nope")
-        _, default = _collect_databases()
-        assert default == "app"
+        monkeypatch.setenv("PGDATABASE", "MyApp")
+        names, default = _collect_databases()
+        assert names == ["myapp"]
+        assert default == "myapp"
 
 
 class TestDbHelper:

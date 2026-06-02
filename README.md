@@ -109,22 +109,24 @@ Every tool accepts an optional `database` argument to target an alternate connec
 useful for Postgres setups that expose system metrics in a separate database — for example,
 Azure Database for PostgreSQL Flexible Server keeps server metrics in `azure_sys`.
 
-List the dbnames you want pools for via `PGLENS_DATABASES`. Host, user, password and TLS mode
-come from the standard libpq env vars and are shared across every alias; only the Postgres
-`dbname` varies per pool:
+`PGDATABASE` is the primary alias and the default target when a tool is called without
+`database=`. List any additional dbnames on the same host in `PGLENS_DATABASES`; each becomes
+its own alias with its own pool. Host, user, password and TLS mode come from the standard
+libpq env vars and are shared across every pool:
 
 ```bash
 export PGHOST=myhost.postgres.database.azure.com
 export PGUSER=admin
 export PGPASSWORD=...
 export PGSSLMODE=require
-export PGLENS_DATABASES=app,azure_sys
+export PGDATABASE=app           # primary alias + default target
+export PGLENS_DATABASES=azure_sys
 pglens
 ```
 
-Each comma-separated name becomes a lowercased alias and is used as the Postgres `dbname` for
-that pool. By default the first alias in the list is the primary; override with
-`PGLENS_DEFAULT_DB=<alias>`.
+Aliases are lowercased. If `PGDATABASE` is unset but `PGLENS_DATABASES` is set, the first
+listed alias becomes the default. If both are unset, a single `default` alias is configured
+that relies on libpq's own default behavior.
 
 If the databases you need live on different hosts or require different credentials, run a
 separate `pglens` MCP server per host with its own `PG*` env block.
@@ -138,7 +140,7 @@ table_sizes(schema="public", database="azure_sys")
 query(sql="SELECT * FROM query_store.qs_view LIMIT 10", database="azure_sys")
 ```
 
-Omit `database` (or pass `None`) to use the primary connection.
+Omit `database` (or pass `None`) to use `PGDATABASE` (the primary alias).
 
 ### Environment variables
 
@@ -148,11 +150,10 @@ Omit `database` (or pass `None`) to use the primary connection.
 | `PGPORT` | no (default 5432) | Postgres port |
 | `PGUSER` | yes | Username |
 | `PGPASSWORD` | yes (or `PGPASSFILE`) | Password |
-| `PGDATABASE` | only when `PGLENS_DATABASES` is unset | dbname for the single `default` alias |
+| `PGDATABASE` | recommended | Primary dbname; also the default alias when a tool is called without `database=` |
 | `PGSSLMODE` | no | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` |
 | `PGSERVICE`, `PGPASSFILE`, `PGAPPNAME`, ... | no | Other libpq env vars honored by asyncpg |
-| `PGLENS_DATABASES` | no | Comma-separated dbnames -> one alias per dbname, sharing the libpq credentials above |
-| `PGLENS_DEFAULT_DB` | no | Alias used when a tool is called without `database=` (defaults to the first entry of `PGLENS_DATABASES`) |
+| `PGLENS_DATABASES` | no | Comma-separated extra dbnames on the same host. Each becomes its own alias/pool, sharing the libpq credentials above. Entries equal to `PGDATABASE` are deduplicated. |
 
 No connection-string env vars are read. Configuration is libpq env vars only.
 
@@ -189,7 +190,7 @@ Single database:
 }
 ```
 
-Multiple databases on the same host (shared libpq credentials, one pool per dbname):
+Multiple databases on the same host (`PGDATABASE` is the default; `PGLENS_DATABASES` lists extras):
 
 ```json
 {
@@ -202,8 +203,8 @@ Multiple databases on the same host (shared libpq credentials, one pool per dbna
         "PGUSER": "admin",
         "PGPASSWORD": "...",
         "PGSSLMODE": "require",
-        "PGLENS_DATABASES": "app,azure_sys",
-        "PGLENS_DEFAULT_DB": "app"
+        "PGDATABASE": "app",
+        "PGLENS_DATABASES": "azure_sys"
       }
     }
   }
