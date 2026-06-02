@@ -14,8 +14,10 @@ from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
 from pglens.adapters.mcp_adapter import mcp
 
 # Every tool that should be registered, mapped to the db method it delegates to.
-EXPECTED_TOOLS: dict[str, str] = {
+# Tools that do not delegate to AsyncpgDatabase (e.g. registry-level tools) map to None.
+EXPECTED_TOOLS: dict[str, str | None] = {
     # schema.py
+    "list_databases": None,
     "database_info": "database_info",
     "list_schemas": "list_schemas",
     "list_tables": "list_tables",

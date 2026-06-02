@@ -14,6 +14,7 @@ pglens adds the tools that close those gaps: checking what values actually exist
 
 | Tool | What it does |
 |---|---|
+| `list_databases` | List configured database aliases (e.g. `default`, `azure_sys`) |
 | `database_info` | Server version, database name, current user, encoding, timezone, uptime, size |
 | `list_schemas` | Schemas with table and view counts |
 | `list_tables` | Tables with row counts and descriptions |
@@ -85,10 +86,13 @@ uv pip install pglens
 
 ## Usage
 
-pglens reads standard PostgreSQL environment variables.
+pglens reads standard PostgreSQL environment variables (libpq). Connection strings (DSNs) are
+not supported — credentials live entirely in `PG*` env vars so they never appear in arguments
+or command lines.
 
 ```bash
 export PGHOST=localhost
+export PGPORT=5432
 export PGUSER=myuser
 export PGPASSWORD=mypassword
 export PGDATABASE=mydb
@@ -96,14 +100,63 @@ export PGDATABASE=mydb
 pglens
 ```
 
-Alternatively, set a connection string via `PGLENS_DSN`:
+`PGSSLMODE`, `PGSERVICE`, `PGPASSFILE` and the rest of the libpq env vars are honored by
+asyncpg automatically.
+
+### Multiple databases
+
+Every tool accepts an optional `database` argument to target an alternate connection. This is
+useful for Postgres setups that expose system metrics in a separate database — for example,
+Azure Database for PostgreSQL Flexible Server keeps server metrics in `azure_sys`.
+
+List the dbnames you want pools for via `PGLENS_DATABASES`. Host, user, password and TLS mode
+come from the standard libpq env vars and are shared across every alias; only the Postgres
+`dbname` varies per pool:
 
 ```bash
-export PGLENS_DSN="postgresql://myuser:mypassword@localhost:5432/mydb"
+export PGHOST=myhost.postgres.database.azure.com
+export PGUSER=admin
+export PGPASSWORD=...
+export PGSSLMODE=require
+export PGLENS_DATABASES=app,azure_sys
 pglens
 ```
 
-When `PGLENS_DSN` is set, it takes precedence over individual `PG*` environment variables.
+Each comma-separated name becomes a lowercased alias and is used as the Postgres `dbname` for
+that pool. By default the first alias in the list is the primary; override with
+`PGLENS_DEFAULT_DB=<alias>`.
+
+If the databases you need live on different hosts or require different credentials, run a
+separate `pglens` MCP server per host with its own `PG*` env block.
+
+Discover what is configured with the `list_databases` tool, then pass the alias as the
+`database` argument:
+
+```text
+list_databases() -> ["app", "azure_sys"]
+table_sizes(schema="public", database="azure_sys")
+query(sql="SELECT * FROM query_store.qs_view LIMIT 10", database="azure_sys")
+```
+
+Omit `database` (or pass `None`) to use the primary connection.
+
+### Environment variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `PGHOST` | yes | Postgres host |
+| `PGPORT` | no (default 5432) | Postgres port |
+| `PGUSER` | yes | Username |
+| `PGPASSWORD` | yes (or `PGPASSFILE`) | Password |
+| `PGDATABASE` | only when `PGLENS_DATABASES` is unset | dbname for the single `default` alias |
+| `PGSSLMODE` | no | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` |
+| `PGSERVICE`, `PGPASSFILE`, `PGAPPNAME`, ... | no | Other libpq env vars honored by asyncpg |
+| `PGLENS_DATABASES` | no | Comma-separated dbnames -> one alias per dbname, sharing the libpq credentials above |
+| `PGLENS_DEFAULT_DB` | no | Alias used when a tool is called without `database=` (defaults to the first entry of `PGLENS_DATABASES`) |
+
+No connection-string env vars are read. Configuration is libpq env vars only.
+
+### Transport
 
 By default the server uses stdio transport. To run as an HTTP server for remote use:
 
@@ -117,6 +170,8 @@ pglens --transport streamable-http
 
 ### Claude Desktop
 
+Single database:
+
 ```json
 {
   "mcpServers": {
@@ -128,6 +183,27 @@ pglens --transport streamable-http
         "PGUSER": "myuser",
         "PGPASSWORD": "mypassword",
         "PGDATABASE": "mydb"
+      }
+    }
+  }
+}
+```
+
+Multiple databases on the same host (shared libpq credentials, one pool per dbname):
+
+```json
+{
+  "mcpServers": {
+    "pglens": {
+      "command": "pglens",
+      "env": {
+        "PGHOST": "myhost.postgres.database.azure.com",
+        "PGPORT": "5432",
+        "PGUSER": "admin",
+        "PGPASSWORD": "...",
+        "PGSSLMODE": "require",
+        "PGLENS_DATABASES": "app,azure_sys",
+        "PGLENS_DEFAULT_DB": "app"
       }
     }
   }

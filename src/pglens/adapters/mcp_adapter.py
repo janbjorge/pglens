@@ -2,7 +2,8 @@
 
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 
 import asyncpg
 from mcp.server.fastmcp import Context, FastMCP
@@ -10,22 +11,91 @@ from mcp.server.session import ServerSession
 
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
 
-Ctx = Context[ServerSession, AsyncpgDatabase, object]
+DEFAULT_DB = "default"
+
+
+@dataclass
+class Databases:
+    """Registry of named asyncpg-backed databases."""
+
+    databases: dict[str, AsyncpgDatabase]
+    default_alias: str = DEFAULT_DB
+
+    def get(self, name: str | None) -> AsyncpgDatabase:
+        key = (name or self.default_alias).lower()
+        if key not in self.databases:
+            available = ", ".join(sorted(self.databases)) or "<none>"
+            raise KeyError(
+                f"Unknown database alias '{key}'. Configured: {available}. "
+                f"Add via PGLENS_DATABASES env var."
+            )
+        return self.databases[key]
+
+    def names(self) -> list[str]:
+        return sorted(self.databases)
+
+
+Ctx = Context[ServerSession, Databases, object]
+
+
+def _collect_databases() -> tuple[list[str], str]:
+    """Resolve configured aliases and default alias from env.
+
+    ``PGLENS_DATABASES=a,b,c`` lists one alias per Postgres dbname. Host,
+    user, password, ssl mode and other connection params come from the
+    standard libpq env vars (``PGHOST``, ``PGUSER``, ``PGPASSWORD``,
+    ``PGSSLMODE``, ...), which asyncpg reads natively. The same libpq
+    credentials are shared by every alias.
+
+    If ``PGLENS_DATABASES`` is unset, a single ``default`` alias is
+    configured that relies entirely on libpq env (including ``PGDATABASE``).
+
+    Default alias: ``PGLENS_DEFAULT_DB`` if it points at a configured alias;
+    otherwise the first listed alias (or ``default`` in the fallback case).
+    """
+    raw = os.environ.get("PGLENS_DATABASES", "").strip()
+    names: list[str] = []
+    if raw:
+        for part in raw.split(","):
+            name = part.strip().lower()
+            if name and name not in names:
+                names.append(name)
+
+    if not names:
+        return [DEFAULT_DB], DEFAULT_DB
+
+    requested = os.environ.get("PGLENS_DEFAULT_DB", "").strip().lower()
+    default_alias = requested if requested in names else names[0]
+    return names, default_alias
 
 
 @asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[AsyncpgDatabase]:
-    dsn = os.environ.get("PGLENS_DSN")
-    async with asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5) as pool:
-        yield AsyncpgDatabase(pool)
+async def app_lifespan(server: FastMCP) -> AsyncIterator[Databases]:
+    names, default_alias = _collect_databases()
+    async with AsyncExitStack() as stack:
+        databases: dict[str, AsyncpgDatabase] = {}
+        for name in names:
+            # When alias is the synthetic 'default' (no PGLENS_DATABASES set),
+            # let libpq env (including PGDATABASE) decide the dbname.
+            dbname = None if name == DEFAULT_DB and len(names) == 1 else name
+            pool = await stack.enter_async_context(
+                asyncpg.create_pool(database=dbname, min_size=1, max_size=5)
+            )
+            databases[name] = AsyncpgDatabase(pool)
+        yield Databases(databases, default_alias)
 
 
 mcp = FastMCP("pglens", lifespan=app_lifespan)
 
 
-def db(ctx: Ctx) -> AsyncpgDatabase:
-    lifespan_context: AsyncpgDatabase = ctx.request_context.lifespan_context
-    return lifespan_context
+def db(ctx: Ctx, database: str | None = None) -> AsyncpgDatabase:
+    registry: Databases = ctx.request_context.lifespan_context
+    return registry.get(database)
+
+
+def databases(ctx: Ctx) -> Databases:
+    registry: Databases = ctx.request_context.lifespan_context
+    return registry
 
 
 @mcp.prompt()
@@ -78,6 +148,11 @@ Performance and health:
 - `blocking_locks` -- lock wait chains (who blocks whom).
 - `sequence_health` -- sequences approaching exhaustion.
 - `matview_status` -- materialized view freshness and refresh eligibility.
+
+Multi-database:
+- `list_databases` -- list configured database aliases. Pass the alias as the
+  `database` argument on any tool to target it (e.g. `database='azure_sys'`
+  to read Azure system metrics). Default targets the primary alias.
 
 Tips:
 - Call list_schemas first if you suspect non-public schemas.

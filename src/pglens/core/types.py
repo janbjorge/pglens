@@ -2,6 +2,14 @@ from typing import Annotated
 
 # Parameter types — descriptions surface in the MCP tool schema
 
+Database = Annotated[
+    str | None,
+    "Database alias to target. Default None uses the primary alias "
+    "(first entry of PGLENS_DATABASES, or PGLENS_DEFAULT_DB if set). "
+    "Configure aliases via PGLENS_DATABASES=app,azure_sys (each name is a Postgres dbname "
+    "sharing libpq env credentials). Call list_databases to see what is configured.",
+]
+
 Schema = Annotated[str, "Postgres schema name, defaults to 'public'"]
 
 TableName = Annotated[str, "Table name without schema prefix, e.g. 'orders' not 'public.orders'"]
