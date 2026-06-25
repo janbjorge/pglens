@@ -19,7 +19,7 @@ AI agent (MCP client)  ──►  pglens  ──►  your PostgreSQL
 
 1. Your MCP client (Claude Desktop, Claude Code, Zed, …) launches `pglens` and connects over MCP.
 2. pglens connects to PostgreSQL using standard libpq environment variables and opens a connection pool.
-3. The agent calls pglens tools to introspect the schema, sample data, run read-only queries, and inspect health — instead of guessing.
+3. The agent calls pglens tools to introspect the schema, sample data, run read-only queries, and inspect health, instead of guessing.
 
 Every query runs inside a `readonly=True` transaction, identifiers are escaped with PostgreSQL's `quote_ident()`, and no DDL tools are exposed. All introspection uses `pg_catalog` directly, so no PostgreSQL extensions are needed. See [Safety](#safety).
 
@@ -93,7 +93,7 @@ There is also a `query_guide` prompt that describes a reasonable workflow for us
 uvx pglens
 ```
 
-There is nothing to upgrade — each launch resolves the newest release. Pin a version when you need to: `uvx pglens@0.4.0`.
+There is nothing to upgrade; each launch resolves the newest release. Pin a version when you need: `uvx pglens@0.4.0`.
 
 ### pip
 
@@ -128,7 +128,7 @@ pglens needs two things: PostgreSQL connection details (via libpq env vars) and 
 
 ### Connecting to PostgreSQL
 
-pglens reads standard PostgreSQL environment variables (libpq). Connection strings (DSNs) are **not** supported — credentials live entirely in `PG*` env vars so they never appear in arguments or command lines.
+pglens reads standard PostgreSQL environment variables (libpq). Connection strings (DSNs) are not supported. Credentials live entirely in `PG*` env vars, so they never appear in arguments or command lines.
 
 | Variable | Required | Purpose |
 |---|---|---|
