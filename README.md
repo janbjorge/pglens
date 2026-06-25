@@ -1,12 +1,27 @@
 # pglens
 
-A PostgreSQL MCP server with tools for schema inspection, data exploration, query execution, and database health monitoring.
+Read-only PostgreSQL introspection for AI agents — 28 MCP tools for schema discovery, data exploration, query execution, and health monitoring. Pure `pg_catalog`, no extensions required.
 
-## Motivation
+## Why pglens
 
-Most Postgres MCP servers expose `query` and `list_tables`, and that's about it. Agents end up guessing column names, enum values, and join paths, which leads to multiple failed attempts before landing on working SQL.
+Most Postgres MCP servers expose `query` and `list_tables`, and little else. Agents end up guessing column names, enum values, and join paths, burning several failed attempts before landing on working SQL.
 
-pglens adds the tools that close those gaps: checking what values actually exist in a column, discovering foreign-key relationships, previewing sample data, and validating query plans. The idea is straightforward: let the agent look before it leaps.
+pglens closes those gaps: it lets the agent check what values actually exist in a column, discover foreign-key relationships, preview sample data, and validate query plans — so it can look before it leaps.
+
+> **`column_values` in particular:** agents frequently write `WHERE status = 'active'` when the real value is `'Active'` or `'enabled'`. `column_values` returns the actual distinct values with counts, so the agent picks the right one instead of guessing.
+
+## How it works
+
+```
+AI agent (MCP client)  ──►  pglens  ──►  your PostgreSQL
+   Claude, etc.            MCP server      (read-only)
+```
+
+1. Your MCP client (Claude Desktop, Claude Code, Zed, …) launches `pglens` and connects over MCP.
+2. pglens connects to PostgreSQL using standard libpq environment variables and opens a connection pool.
+3. The agent calls pglens tools to introspect the schema, sample data, run read-only queries, and inspect health — instead of guessing.
+
+Every query runs inside a `readonly=True` transaction, identifiers are escaped with PostgreSQL's `quote_ident()`, and no DDL tools are exposed. All introspection uses `pg_catalog` directly, so no PostgreSQL extensions are needed. See [Safety](#safety).
 
 ## Tools
 
@@ -68,116 +83,37 @@ pglens adds the tools that close those gaps: checking what values actually exist
 
 There is also a `query_guide` prompt that describes a reasonable workflow for using these tools together.
 
-### A note on `column_values`
-
-Agents frequently write `WHERE status = 'active'` when the actual value is `'Active'` or `'enabled'`. `column_values` returns the real distinct values in a column with counts, so the agent can pick the right one instead of guessing.
-
 ## Installation
 
-```bash
-pip install pglens
-```
+### uvx (recommended)
 
-Or with [uv](https://docs.astral.sh/uv/):
+[uvx](https://docs.astral.sh/uv/) runs pglens straight from PyPI with no install step, always fetching the latest published version:
 
 ```bash
-uv pip install pglens
+uvx pglens
 ```
 
-## Usage
+There is nothing to upgrade — each launch resolves the newest release. Pin a version when you need to: `uvx pglens@0.4.0`.
 
-pglens reads standard PostgreSQL environment variables (libpq). Connection strings (DSNs) are
-not supported — credentials live entirely in `PG*` env vars so they never appear in arguments
-or command lines.
+### pip
 
 ```bash
-export PGHOST=localhost
-export PGPORT=5432
-export PGUSER=myuser
-export PGPASSWORD=mypassword
-export PGDATABASE=mydb
-
-pglens
+pip install pglens            # install
+pip install --upgrade pglens  # upgrade later
 ```
 
-`PGSSLMODE`, `PGSERVICE`, `PGPASSFILE` and the rest of the libpq env vars are honored by
-asyncpg automatically.
+**Requirements:** Python 3.11+ and a reachable PostgreSQL server.
 
-### Multiple databases
+## Configuration
 
-Every tool accepts an optional `database` argument to target an alternate connection. This is
-useful for Postgres setups that expose system metrics in a separate database — for example,
-Azure Database for PostgreSQL Flexible Server keeps server metrics in `azure_sys`.
-
-`PGDATABASE` is the primary alias and the default target when a tool is called without
-`database=`. List any additional dbnames on the same host in `PGLENS_DATABASES`; each becomes
-its own alias with its own pool. Host, user, password and TLS mode come from the standard
-libpq env vars and are shared across every pool:
-
-```bash
-export PGHOST=myhost.postgres.database.azure.com
-export PGUSER=admin
-export PGPASSWORD=...
-export PGSSLMODE=require
-export PGDATABASE=app           # primary alias + default target
-export PGLENS_DATABASES=azure_sys
-pglens
-```
-
-Aliases are lowercased. If `PGDATABASE` is unset but `PGLENS_DATABASES` is set, the first
-listed alias becomes the default. If both are unset, a single `default` alias is configured
-that relies on libpq's own default behavior.
-
-If the databases you need live on different hosts or require different credentials, run a
-separate `pglens` MCP server per host with its own `PG*` env block.
-
-Discover what is configured with the `list_databases` tool, then pass the alias as the
-`database` argument:
-
-```text
-list_databases() -> ["app", "azure_sys"]
-table_sizes(schema="public", database="azure_sys")
-query(sql="SELECT * FROM query_store.qs_view LIMIT 10", database="azure_sys")
-```
-
-Omit `database` (or pass `None`) to use `PGDATABASE` (the primary alias).
-
-### Environment variables
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `PGHOST` | yes | Postgres host |
-| `PGPORT` | no (default 5432) | Postgres port |
-| `PGUSER` | yes | Username |
-| `PGPASSWORD` | yes (or `PGPASSFILE`) | Password |
-| `PGDATABASE` | recommended | Primary dbname; also the default alias when a tool is called without `database=` |
-| `PGSSLMODE` | no | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` |
-| `PGSERVICE`, `PGPASSFILE`, `PGAPPNAME`, ... | no | Other libpq env vars honored by asyncpg |
-| `PGLENS_DATABASES` | no | Comma-separated extra dbnames on the same host. Each becomes its own alias/pool, sharing the libpq credentials above. Entries equal to `PGDATABASE` are deduplicated. |
-
-No connection-string env vars are read. Configuration is libpq env vars only.
-
-### Transport
-
-By default the server uses stdio transport. To run as an HTTP server for remote use:
-
-```bash
-pglens --transport streamable-http
-```
-
-| Flag | Choices | Default | Description |
-|---|---|---|---|
-| `--transport` | `stdio`, `streamable-http` | `stdio` | MCP transport type |
-
-### Claude Desktop
-
-Single database:
+pglens needs two things: PostgreSQL connection details (via libpq env vars) and an entry in your MCP client. A minimal Claude Desktop config:
 
 ```json
 {
   "mcpServers": {
     "pglens": {
-      "command": "pglens",
+      "command": "uvx",
+      "args": ["pglens"],
       "env": {
         "PGHOST": "localhost",
         "PGPORT": "5432",
@@ -190,13 +126,101 @@ Single database:
 }
 ```
 
-Multiple databases on the same host (`PGDATABASE` is the default; `PGLENS_DATABASES` lists extras):
+### Connecting to PostgreSQL
+
+pglens reads standard PostgreSQL environment variables (libpq). Connection strings (DSNs) are **not** supported — credentials live entirely in `PG*` env vars so they never appear in arguments or command lines.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `PGHOST` | yes | Postgres host |
+| `PGPORT` | no (default 5432) | Postgres port |
+| `PGUSER` | yes | Username |
+| `PGPASSWORD` | yes (or `PGPASSFILE`) | Password |
+| `PGDATABASE` | recommended | Primary dbname; also the default alias when a tool is called without `database=` |
+| `PGSSLMODE` | no | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` |
+| `PGSERVICE`, `PGPASSFILE`, `PGAPPNAME`, … | no | Other libpq env vars, honored by asyncpg automatically |
+| `PGLENS_DATABASES` | no | Comma-separated extra dbnames on the same host (see [Multiple databases](#multiple-databases)) |
+
+No connection-string env vars are read. Configuration is libpq env vars only.
+
+To run pglens directly from a shell (e.g. for testing):
+
+```bash
+export PGHOST=localhost
+export PGUSER=myuser
+export PGPASSWORD=mypassword
+export PGDATABASE=mydb
+uvx pglens
+```
+
+### MCP clients
+
+If you installed pglens with `pip` instead of using `uvx`, replace `"command": "uvx", "args": ["pglens"]` with `"command": "pglens"` in any of the configs below.
+
+#### Claude Desktop
 
 ```json
 {
   "mcpServers": {
     "pglens": {
-      "command": "pglens",
+      "command": "uvx",
+      "args": ["pglens"],
+      "env": {
+        "PGHOST": "localhost",
+        "PGPORT": "5432",
+        "PGUSER": "myuser",
+        "PGPASSWORD": "mypassword",
+        "PGDATABASE": "mydb"
+      }
+    }
+  }
+}
+```
+
+#### Claude Code
+
+```json
+{
+  "mcpServers": {
+    "pglens": {
+      "command": "uvx",
+      "args": ["pglens"],
+      "env": {
+        "PGHOST": "localhost",
+        "PGDATABASE": "mydb"
+      }
+    }
+  }
+}
+```
+
+#### Zed
+
+```json
+{
+  "context_servers": {
+    "pglens": {
+      "command": {
+        "path": "uvx",
+        "args": ["pglens"]
+      }
+    }
+  }
+}
+```
+
+### Multiple databases
+
+Every tool accepts an optional `database` argument to target an alternate connection. This is useful for Postgres setups that expose system metrics in a separate database — for example, Azure Database for PostgreSQL Flexible Server keeps server metrics in `azure_sys`.
+
+`PGDATABASE` is the primary alias and the default target when a tool is called without `database=`. List any additional dbnames on the same host in `PGLENS_DATABASES`; each becomes its own alias with its own pool. Host, user, password, and TLS mode come from the standard libpq env vars and are shared across every pool:
+
+```json
+{
+  "mcpServers": {
+    "pglens": {
+      "command": "uvx",
+      "args": ["pglens"],
       "env": {
         "PGHOST": "myhost.postgres.database.azure.com",
         "PGPORT": "5432",
@@ -211,66 +235,57 @@ Multiple databases on the same host (`PGDATABASE` is the default; `PGLENS_DATABA
 }
 ```
 
-### Claude Code
+- Aliases are lowercased.
+- If `PGDATABASE` is unset but `PGLENS_DATABASES` is set, the first listed alias becomes the default.
+- If both are unset, a single `default` alias relies on libpq's own default behavior.
+- If the databases you need live on different hosts or require different credentials, run a separate `pglens` server per host with its own `PG*` env block.
 
-```json
-{
-  "mcpServers": {
-    "pglens": {
-      "command": "pglens",
-      "env": {
-        "PGHOST": "localhost",
-        "PGDATABASE": "mydb"
-      }
-    }
-  }
-}
+Discover what is configured with `list_databases`, then pass the alias as the `database` argument:
+
+```text
+list_databases() -> ["app", "azure_sys"]
+table_sizes(schema="public", database="azure_sys")
+query(sql="SELECT * FROM query_store.qs_view LIMIT 10", database="azure_sys")
 ```
 
-### Zed
+Omit `database` (or pass `None`) to use `PGDATABASE` (the primary alias).
 
-```json
-{
-  "context_servers": {
-    "pglens": {
-      "command": {
-        "path": "pglens",
-        "args": []
-      }
-    }
-  }
-}
+### Transport
+
+By default the server uses stdio transport (what every MCP client config above expects). To run as an HTTP server for remote use:
+
+```bash
+uvx pglens --transport streamable-http
 ```
 
-## Architecture
+| Flag | Choices | Default | Description |
+|---|---|---|---|
+| `--transport` | `stdio`, `streamable-http` | `stdio` | MCP transport type |
+
+## Safety
+
+- All user-influenced queries run inside `readonly=True` transactions.
+- Table and column identifiers are escaped via PostgreSQL's `quote_ident()`; values are passed as parameters (`$1`, `$2`).
+- No DDL tools are exposed.
+
+## How it's built
 
 ```
-adapters/tools/*.py   (MCP tool definitions, organized by category)
-    |
-adapters/mcp_adapter.py  (FastMCP server, lifespan, pool management)
-    |
+adapters/tools/*.py          (MCP tool definitions, organized by category)
+        │
+adapters/mcp_adapter.py      (FastMCP server, lifespan, pool management)
+        │
 adapters/asyncpg_adapter.py  (SQL queries, asyncpg pool)
-    |
-PostgreSQL
+        │
+   PostgreSQL
 ```
 
 `AsyncpgDatabase` holds the asyncpg pool and all query methods. Tool modules in `adapters/tools/` are thin wrappers that register MCP tools via decorators and delegate to it. All queries use pure `pg_catalog` introspection — no PostgreSQL extensions required.
 
-## Adding a tool
+**Adding a tool:**
 
-1. Add a method to `AsyncpgDatabase` in `adapters/asyncpg_adapter.py`
-2. Add a `@mcp.tool()` function in the appropriate `adapters/tools/*.py` module
-
-## Safety
-
-- All user-influenced queries run inside `readonly=True` transactions
-- Table and column identifiers are escaped via PostgreSQL's `quote_ident()`
-- No DDL tools are exposed
-
-## Requirements
-
-- Python 3.11+
-- PostgreSQL
+1. Add a method to `AsyncpgDatabase` in `adapters/asyncpg_adapter.py`.
+2. Add a `@mcp.tool()` function in the appropriate `adapters/tools/*.py` module.
 
 ## License
 
