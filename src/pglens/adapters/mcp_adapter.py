@@ -22,7 +22,7 @@ class Databases:
     default_alias: str = DEFAULT_DB
 
     def get(self, name: str | None) -> AsyncpgDatabase:
-        key = (name or self.default_alias).lower()
+        key = name or self.default_alias
         if key not in self.databases:
             available = ", ".join(sorted(self.databases)) or "<none>"
             raise KeyError(
@@ -54,15 +54,15 @@ def _collect_databases() -> tuple[list[str], str]:
     ``default`` alias is configured that relies entirely on libpq's own
     default behavior (e.g. dbname = ``PGUSER``).
 
-    Aliases are lowercased.
+    Names are used verbatim as Postgres dbnames, which are case-sensitive.
     """
-    primary = os.environ.get("PGDATABASE", "").strip().lower() or None
+    primary = os.environ.get("PGDATABASE", "").strip() or None
 
     extras: list[str] = []
     raw = os.environ.get("PGLENS_DATABASES", "").strip()
     if raw:
         for part in raw.split(","):
-            name = part.strip().lower()
+            name = part.strip()
             if name and name not in extras and name != primary:
                 extras.append(name)
 
