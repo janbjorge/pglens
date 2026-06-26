@@ -153,6 +153,8 @@ export PGDATABASE=mydb
 uvx pglens
 ```
 
+Check the installed version with `pglens --version`.
+
 ### MCP clients
 
 If you installed pglens with `pip` instead of using `uvx`, replace `"command": "uvx", "args": ["pglens"]` with `"command": "pglens"` in any of the configs below.
