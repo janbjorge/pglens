@@ -37,10 +37,6 @@ class TestDatabasesRegistry:
         reg = _registry(DEFAULT_DB, "azure_sys")
         assert reg.get("azure_sys") is reg.databases["azure_sys"]
 
-    def test_get_lowercases(self) -> None:
-        reg = _registry(DEFAULT_DB, "azure_sys")
-        assert reg.get("AZURE_SYS") is reg.databases["azure_sys"]
-
     def test_get_unknown_raises(self) -> None:
         reg = _registry(DEFAULT_DB, "azure_sys")
         with pytest.raises(KeyError, match="missing"):
@@ -70,7 +66,7 @@ class TestCollectDatabases:
         monkeypatch.setenv("PGDATABASE", "app")
         monkeypatch.setenv("PGLENS_DATABASES", "azure_sys, Analytics")
         names, default = _collect_databases()
-        assert names == ["app", "azure_sys", "analytics"]
+        assert names == ["app", "azure_sys", "Analytics"]
         assert default == "app"
 
     def test_pgdatabase_dedupes_from_extras(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,7 +81,7 @@ class TestCollectDatabases:
         monkeypatch.setenv("PGLENS_DATABASES", "app, azure_sys ,Analytics")
         names, default = _collect_databases()
         # Without PGDATABASE the first listed alias becomes the default.
-        assert names == ["app", "azure_sys", "analytics"]
+        assert names == ["app", "azure_sys", "Analytics"]
         assert default == "app"
 
     def test_pglens_databases_dedupes_itself(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,12 +90,14 @@ class TestCollectDatabases:
         names, _ = _collect_databases()
         assert names == ["app", "azure_sys"]
 
-    def test_pgdatabase_lowercased(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_pgdatabase_preserves_case(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Postgres dbnames are case-sensitive; the original case must survive
+        # so asyncpg connects to the right database (issue #16).
         _clear_env(monkeypatch)
         monkeypatch.setenv("PGDATABASE", "MyApp")
         names, default = _collect_databases()
-        assert names == ["myapp"]
-        assert default == "myapp"
+        assert names == ["MyApp"]
+        assert default == "MyApp"
 
 
 class TestDbHelper:

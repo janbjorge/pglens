@@ -235,7 +235,7 @@ Every tool accepts an optional `database` argument to target an alternate connec
 }
 ```
 
-- Aliases are lowercased.
+- Names are used verbatim as Postgres dbnames, which are case-sensitive (e.g. `PGDATABASE=MyApp` connects to `MyApp`, not `myapp`).
 - If `PGDATABASE` is unset but `PGLENS_DATABASES` is set, the first listed alias becomes the default.
 - If both are unset, a single `default` alias relies on libpq's own default behavior.
 - If the databases you need live on different hosts or require different credentials, run a separate `pglens` server per host with its own `PG*` env block.
