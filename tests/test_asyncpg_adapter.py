@@ -193,8 +193,8 @@ class TestSearchData:
         await db.search_data("users", "test", "public")
 
         sql = conn.fetch.call_args[0][0]
-        assert '"name" ILIKE $1' in sql
-        assert '"email" ILIKE $1' in sql
+        assert '"name"::text ILIKE $1' in sql
+        assert '"email"::text ILIKE $1' in sql
         assert " OR " in sql
 
 
@@ -217,6 +217,16 @@ class TestSampleRows:
 
         assert conn.fetch.call_args[0][1] == 3
 
+    @pytest.mark.parametrize("n", [0, -5])
+    async def test_sample_rows_clamps_low_n_to_1(self, n: int) -> None:
+        conn = mock_conn()
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        await db.sample_rows("small_table", n, "public")
+
+        assert conn.fetch.call_args[0][1] == 1
+
 
 class TestColumnValues:
     async def test_column_values_clamps_top_n(self) -> None:
@@ -228,6 +238,16 @@ class TestColumnValues:
 
         assert conn.fetch.call_args[0][1] == 100
         assert result == [{"value": "active", "frequency": 42}]
+
+    @pytest.mark.parametrize("top_n", [0, -5])
+    async def test_column_values_clamps_low_top_n_to_1(self, top_n: int) -> None:
+        conn = mock_conn()
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        await db.column_values("orders", "status", top_n, "public")
+
+        assert conn.fetch.call_args[0][1] == 1
 
 
 class TestDescribeTable:

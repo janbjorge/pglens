@@ -259,10 +259,16 @@ class TestDataExploration:
     async def test_search_enum_values(self, db: AsyncpgDatabase) -> None:
         result = await db.search_enum_values("order_status")
         assert len(result) == 1
+        assert result[0]["schema"] == "public"
         assert result[0]["enum_name"] == "order_status"
         vals = result[0]["values"]
         assert "pending" in vals
         assert "delivered" in vals
+
+    async def test_search_data_uuid_column(self, db: AsyncpgDatabase) -> None:
+        result = await db.search_data("api_keys", "11111111", "public")
+        assert len(result) == 1
+        assert result[0]["label"] == "ci token"
 
     async def test_column_stats(self, db: AsyncpgDatabase) -> None:
         result = await db.column_stats("users", "username", "public")
@@ -409,6 +415,13 @@ class TestHealthMonitoring:
         seq = next(s for s in seqs if "users" in s["sequence_name"])
         assert seq["last_value"] is not None
         assert seq["pct_consumed"] is not None
+
+    async def test_sequence_health_descending_sequence(self, db: AsyncpgDatabase) -> None:
+        seqs = await db.sequence_health("public")
+        countdown = next(s for s in seqs if s["sequence_name"] == "countdown")
+        # Fresh descending sequence sits at its max: nothing consumed yet
+        assert countdown["last_value"] == 1000
+        assert float(countdown["pct_consumed"]) < 5.0
 
     async def test_active_queries(self, db: AsyncpgDatabase) -> None:
         # Should run without error; our own connection is excluded

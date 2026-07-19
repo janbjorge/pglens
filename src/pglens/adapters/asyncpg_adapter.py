@@ -340,6 +340,7 @@ class AsyncpgDatabase:
             JOIN pg_class cl1 ON con.conrelid = cl1.oid
             JOIN pg_namespace ns1 ON cl1.relnamespace = ns1.oid
             JOIN pg_class cl2 ON con.confrelid = cl2.oid
+            JOIN pg_namespace ns2 ON cl2.relnamespace = ns2.oid
             CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
                 WITH ORDINALITY AS u(local_attnum, foreign_attnum, ord)
             JOIN pg_attribute a1
@@ -348,6 +349,7 @@ class AsyncpgDatabase:
                 ON a2.attrelid = con.confrelid AND a2.attnum = u.foreign_attnum
             WHERE con.contype = 'f'
                 AND ns1.nspname = $1
+                AND ns2.nspname = $1
             """,
             schema,
         )
@@ -422,7 +424,7 @@ class AsyncpgDatabase:
             async with conn.transaction(readonly=True):
                 rows = await conn.fetch(
                     f"SELECT * FROM {ref} ORDER BY random() LIMIT $1",
-                    min(n, 100),
+                    min(max(n, 1), 100),
                 )
                 return [dict(r) for r in rows]
 
@@ -445,7 +447,7 @@ class AsyncpgDatabase:
                         ORDER BY 2 DESC
                         LIMIT $1
                         """,
-                        min(top_n, 100),
+                        min(max(top_n, 1), 100),
                     )
                 ]
 
@@ -457,7 +459,8 @@ class AsyncpgDatabase:
             SELECT quote_ident(column_name) AS safe_name
             FROM information_schema.columns
             WHERE table_schema = $1 AND table_name = $2
-                AND data_type IN ('text', 'character varying', 'character', 'name')
+                AND (data_type IN ('text', 'character varying', 'character', 'name')
+                     OR udt_name IN ('citext', 'uuid'))
             ORDER BY ordinal_position
             """,
             schema,
@@ -467,7 +470,7 @@ class AsyncpgDatabase:
             return []
         ref = self.safe_table_ref(schema, table_name)
         escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        conditions = " OR ".join(f"{r['safe_name']} ILIKE $1" for r in text_cols)
+        conditions = " OR ".join(f"{r['safe_name']}::text ILIKE $1" for r in text_cols)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 rows = await conn.fetch(
@@ -504,13 +507,15 @@ class AsyncpgDatabase:
             for r in await self.pool.fetch(
                 """
                 SELECT
+                    n.nspname AS schema,
                     t.typname AS enum_name,
                     array_agg(e.enumlabel ORDER BY e.enumsortorder) AS values
                 FROM pg_type t
+                JOIN pg_namespace n ON t.typnamespace = n.oid
                 JOIN pg_enum e ON t.oid = e.enumtypid
                 WHERE t.typname ILIKE '%' || $1 || '%'
-                GROUP BY t.typname
-                ORDER BY t.typname
+                GROUP BY n.nspname, t.typname
+                ORDER BY n.nspname, t.typname
                 """,
                 escaped,
             )
@@ -617,18 +622,33 @@ class AsyncpgDatabase:
             return {"error": f"No statistics for {schema}.{table_name}.{column_name}. Run ANALYZE."}
 
         async with self.pool.acquire() as conn:
-            async with conn.transaction(readonly=True):
-                summary_row = await conn.fetchrow(
-                    f"""
-                    SELECT
-                        min({col})::text AS min_value,
-                        max({col})::text AS max_value,
-                        count(*) AS total_rows,
-                        count({col}) AS non_null_count,
-                        count(*) - count({col}) AS null_count
-                    FROM {ref}
-                    """
-                )
+            try:
+                async with conn.transaction(readonly=True):
+                    summary_row = await conn.fetchrow(
+                        f"""
+                        SELECT
+                            min({col})::text AS min_value,
+                            max({col})::text AS max_value,
+                            count(*) AS total_rows,
+                            count({col}) AS non_null_count,
+                            count(*) - count({col}) AS null_count
+                        FROM {ref}
+                        """
+                    )
+            except asyncpg.UndefinedFunctionError:
+                # Types without ordering (json, point, xid, ...) have no min/max
+                async with conn.transaction(readonly=True):
+                    summary_row = await conn.fetchrow(
+                        f"""
+                        SELECT
+                            NULL::text AS min_value,
+                            NULL::text AS max_value,
+                            count(*) AS total_rows,
+                            count({col}) AS non_null_count,
+                            count(*) - count({col}) AS null_count
+                        FROM {ref}
+                        """
+                    )
 
         summary = dict(summary_row) if summary_row else {}
 
@@ -1000,8 +1020,12 @@ class AsyncpgDatabase:
                     s.cycle AS is_cycled,
                     CASE WHEN s.max_value != s.min_value AND s.last_value IS NOT NULL
                         THEN round(
-                            100.0 * (s.last_value - s.min_value)
-                            / (s.max_value - s.min_value), 2
+                            CASE WHEN s.increment_by < 0
+                                THEN 100.0 * (s.max_value - s.last_value)
+                                    / (s.max_value - s.min_value)
+                                ELSE 100.0 * (s.last_value - s.min_value)
+                                    / (s.max_value - s.min_value)
+                            END, 2
                         )
                     END AS pct_consumed
                 FROM pg_sequences s
