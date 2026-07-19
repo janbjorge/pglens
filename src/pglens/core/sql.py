@@ -5,6 +5,11 @@ from pglast.stream import RawStream
 from pglast.visitors import Ancestor, Visitor
 
 
+def quote_ident(name: str) -> str:
+    """Quote a SQL identifier, matching Postgres quote_ident semantics."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 class _RejectUnsafeNodes(Visitor):
     """Reject AST nodes that make a statement unsafe or unexecutable here.
 

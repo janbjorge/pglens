@@ -462,12 +462,14 @@ class TestMatviewsAndDependencies:
 
 
 class TestSafeRefs:
-    async def test_safe_table_ref(self, db: AsyncpgDatabase) -> None:
-        ref = await db.safe_table_ref("public", "users")
-        # Should be properly quoted
-        assert "public" in ref
-        assert "users" in ref
+    async def test_safe_table_ref_resolves(self, db: AsyncpgDatabase) -> None:
+        ref = db.safe_table_ref("public", "users")
+        assert ref == '"public"."users"'
+        oid = await db.pool.fetchval("SELECT to_regclass($1)", ref)
+        assert oid is not None
 
-    async def test_safe_column_ref(self, db: AsyncpgDatabase) -> None:
-        ref = await db.safe_column_ref("username")
-        assert "username" in ref
+    async def test_safe_refs_usable_in_query(self, db: AsyncpgDatabase) -> None:
+        ref = db.safe_table_ref("public", "users")
+        col = db.safe_column_ref("username")
+        rows = await db.pool.fetch(f"SELECT {col} FROM {ref} ORDER BY {col}")
+        assert [r["username"] for r in rows] == ["alice", "bob", "charlie"]

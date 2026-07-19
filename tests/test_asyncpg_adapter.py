@@ -50,21 +50,17 @@ def db(pool: AsyncMock) -> AsyncpgDatabase:
 
 
 class TestSafeRefs:
-    async def test_safe_table_ref(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
-        pool.fetchval.return_value = '"public"."orders"'
-        result = await db.safe_table_ref("public", "orders")
-        assert result == '"public"."orders"'
-        pool.fetchval.assert_called_once_with(
-            "SELECT quote_ident($1) || '.' || quote_ident($2)",
-            "public",
-            "orders",
-        )
+    def test_safe_table_ref(self, db: AsyncpgDatabase) -> None:
+        assert db.safe_table_ref("public", "orders") == '"public"."orders"'
 
-    async def test_safe_column_ref(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
-        pool.fetchval.return_value = '"status"'
-        result = await db.safe_column_ref("status")
-        assert result == '"status"'
-        pool.fetchval.assert_called_once_with("SELECT quote_ident($1)", "status")
+    def test_safe_table_ref_escapes_embedded_quotes(self, db: AsyncpgDatabase) -> None:
+        assert db.safe_table_ref('sch"ema', 'ta"ble') == '"sch""ema"."ta""ble"'
+
+    def test_safe_column_ref(self, db: AsyncpgDatabase) -> None:
+        assert db.safe_column_ref("status") == '"status"'
+
+    def test_safe_column_ref_escapes_embedded_quotes(self, db: AsyncpgDatabase) -> None:
+        assert db.safe_column_ref('col"umn') == '"col""umn"'
 
 
 class TestDatabaseInfo:
@@ -127,7 +123,6 @@ class TestTableRowCounts:
     async def test_table_row_counts_returns_exact(self) -> None:
         conn = mock_conn()
         pool = mock_pool_with_conn(conn)
-        pool.fetchval.return_value = '"public"."users"'
         conn.fetchrow.return_value = make_record(exact_count=42)
         db = AsyncpgDatabase(pool=pool)
 
@@ -138,7 +133,6 @@ class TestTableRowCounts:
     async def test_table_row_counts_uses_readonly_transaction(self) -> None:
         conn = mock_conn()
         pool = mock_pool_with_conn(conn)
-        pool.fetchval.return_value = '"public"."users"'
         conn.fetchrow.return_value = make_record(exact_count=0)
         db = AsyncpgDatabase(pool=pool)
 
@@ -194,7 +188,6 @@ class TestSearchData:
             make_record(safe_name='"name"'),
             make_record(safe_name='"email"'),
         ]
-        pool.fetchval.return_value = '"public"."users"'
         db = AsyncpgDatabase(pool=pool)
 
         await db.search_data("users", "test", "public")
@@ -209,7 +202,6 @@ class TestSampleRows:
     async def test_sample_rows_clamps_to_100(self) -> None:
         conn = mock_conn()
         pool = mock_pool_with_conn(conn)
-        pool.fetchval.return_value = '"public"."big_table"'
         db = AsyncpgDatabase(pool=pool)
 
         await db.sample_rows("big_table", 999, "public")
@@ -219,7 +211,6 @@ class TestSampleRows:
     async def test_sample_rows_respects_small_n(self) -> None:
         conn = mock_conn()
         pool = mock_pool_with_conn(conn)
-        pool.fetchval.return_value = '"public"."small_table"'
         db = AsyncpgDatabase(pool=pool)
 
         await db.sample_rows("small_table", 3, "public")
@@ -231,7 +222,6 @@ class TestColumnValues:
     async def test_column_values_clamps_top_n(self) -> None:
         conn = mock_conn(fetch_return=[make_record(value="active", frequency=42)])
         pool = mock_pool_with_conn(conn)
-        pool.fetchval.side_effect = ['"public"."orders"', '"status"']
         db = AsyncpgDatabase(pool=pool)
 
         result = await db.column_values("orders", "status", 200, "public")
@@ -242,7 +232,6 @@ class TestColumnValues:
 
 class TestDescribeTable:
     async def test_describe_table_structure(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
-        pool.fetchval.return_value = '"public"."orders"'
         pool.fetch.side_effect = [
             [
                 make_record(
@@ -499,7 +488,6 @@ class TestListSchemas:
 
 class TestColumnStats:
     async def test_column_stats_no_stats(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
-        pool.fetchval.side_effect = ['"public"."orders"', '"total"']
         pool.fetchrow.return_value = None
         result = await db.column_stats("orders", "total", "public")
         assert "error" in result
@@ -507,8 +495,6 @@ class TestColumnStats:
     async def test_column_stats_returns_combined(self) -> None:
         conn = mock_conn()
         pool = mock_pool_with_conn(conn)
-        # safe_table_ref and safe_column_ref
-        pool.fetchval.side_effect = ['"public"."orders"', '"total"']
         # pg_stats query
         pool.fetchrow.return_value = make_record(
             null_frac=0.05,

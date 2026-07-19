@@ -6,7 +6,7 @@ from typing import cast
 
 import asyncpg
 
-from pglens.core.sql import validate_select
+from pglens.core.sql import quote_ident, validate_select
 
 
 def object_type_to_relkind(object_type: str) -> str:
@@ -29,18 +29,11 @@ def object_type_to_relkind(object_type: str) -> str:
 class AsyncpgDatabase:
     pool: asyncpg.Pool
 
-    async def safe_table_ref(self, schema: str, table_name: str) -> str:
-        return cast(
-            str,
-            await self.pool.fetchval(
-                "SELECT quote_ident($1) || '.' || quote_ident($2)",
-                schema,
-                table_name,
-            ),
-        )
+    def safe_table_ref(self, schema: str, table_name: str) -> str:
+        return f"{quote_ident(schema)}.{quote_ident(table_name)}"
 
-    async def safe_column_ref(self, column_name: str) -> str:
-        return cast(str, await self.pool.fetchval("SELECT quote_ident($1)", column_name))
+    def safe_column_ref(self, column_name: str) -> str:
+        return quote_ident(column_name)
 
     async def database_info(self) -> dict[str, object]:
         row = await self.pool.fetchrow(
@@ -93,7 +86,7 @@ class AsyncpgDatabase:
         ]
 
     async def table_row_counts(self, table_name: str, schema: str) -> dict[str, object]:
-        ref = await self.safe_table_ref(schema, table_name)
+        ref = self.safe_table_ref(schema, table_name)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 row = await conn.fetchrow(f"SELECT count(*) AS exact_count FROM {ref}")
@@ -159,7 +152,7 @@ class AsyncpgDatabase:
         ]
 
     async def describe_table(self, table_name: str, schema: str) -> dict[str, object]:
-        ref = await self.safe_table_ref(schema, table_name)
+        ref = self.safe_table_ref(schema, table_name)
 
         columns = [
             dict(r)
@@ -424,7 +417,7 @@ class AsyncpgDatabase:
         }
 
     async def sample_rows(self, table_name: str, n: int, schema: str) -> list[dict[str, object]]:
-        ref = await self.safe_table_ref(schema, table_name)
+        ref = self.safe_table_ref(schema, table_name)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 rows = await conn.fetch(
@@ -436,8 +429,8 @@ class AsyncpgDatabase:
     async def column_values(
         self, table_name: str, column_name: str, top_n: int, schema: str
     ) -> list[dict[str, object]]:
-        ref = await self.safe_table_ref(schema, table_name)
-        col = await self.safe_column_ref(column_name)
+        ref = self.safe_table_ref(schema, table_name)
+        col = self.safe_column_ref(column_name)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 return [
@@ -472,7 +465,7 @@ class AsyncpgDatabase:
         )
         if not text_cols:
             return []
-        ref = await self.safe_table_ref(schema, table_name)
+        ref = self.safe_table_ref(schema, table_name)
         escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         conditions = " OR ".join(f"{r['safe_name']} ILIKE $1" for r in text_cols)
         async with self.pool.acquire() as conn:
@@ -601,8 +594,8 @@ class AsyncpgDatabase:
     async def column_stats(
         self, table_name: str, column_name: str, schema: str
     ) -> dict[str, object]:
-        ref = await self.safe_table_ref(schema, table_name)
-        col = await self.safe_column_ref(column_name)
+        ref = self.safe_table_ref(schema, table_name)
+        col = self.safe_column_ref(column_name)
         stats = await self.pool.fetchrow(
             """
             SELECT
@@ -929,7 +922,7 @@ class AsyncpgDatabase:
         ]
 
     async def list_triggers(self, table_name: str, schema: str) -> list[dict[str, object]]:
-        ref = await self.safe_table_ref(schema, table_name)
+        ref = self.safe_table_ref(schema, table_name)
         return [
             dict(r)
             for r in await self.pool.fetch(
