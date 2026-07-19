@@ -11,6 +11,8 @@ from pglens.adapters.mcp_adapter import (
     DEFAULT_DB,
     Databases,
     _collect_databases,
+    _server_settings,
+    _statement_timeout_ms,
     db,
     mcp,
 )
@@ -39,7 +41,7 @@ class TestDatabasesRegistry:
 
     def test_get_unknown_raises(self) -> None:
         reg = _registry(DEFAULT_DB, "azure_sys")
-        with pytest.raises(KeyError, match="missing"):
+        with pytest.raises(ValueError, match="missing"):
             reg.get("missing")
 
     def test_names_sorted(self) -> None:
@@ -100,6 +102,37 @@ class TestCollectDatabases:
         assert default == "MyApp"
 
 
+class TestStatementTimeout:
+    def test_default_is_60_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PGLENS_STATEMENT_TIMEOUT", raising=False)
+        assert _statement_timeout_ms() == 60_000
+
+    def test_env_override_in_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_STATEMENT_TIMEOUT", "5")
+        assert _statement_timeout_ms() == 5_000
+
+    def test_zero_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_STATEMENT_TIMEOUT", "0")
+        assert _statement_timeout_ms() == 0
+
+    def test_rejects_non_integer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_STATEMENT_TIMEOUT", "5s")
+        with pytest.raises(ValueError, match="integer number of seconds"):
+            _statement_timeout_ms()
+
+    def test_rejects_negative(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_STATEMENT_TIMEOUT", "-1")
+        with pytest.raises(ValueError, match=">= 0"):
+            _statement_timeout_ms()
+
+    def test_server_settings_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_STATEMENT_TIMEOUT", "30")
+        settings = _server_settings()
+        assert settings["application_name"] == "pglens"
+        assert settings["default_transaction_read_only"] == "on"
+        assert settings["statement_timeout"] == "30000"
+
+
 class TestDbHelper:
     def test_db_routes_by_alias(self) -> None:
         reg = _registry(DEFAULT_DB, "azure_sys")
@@ -122,7 +155,7 @@ class TestListDatabasesTool:
 class TestToolForwardsDatabaseArg:
     """Smoke test: a representative tool actually passes `database` through `db()`."""
 
-    async def test_query_uses_named_database(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_query_uses_named_database(self) -> None:
         primary = AsyncMock(spec=AsyncpgDatabase)
         azure = AsyncMock(spec=AsyncpgDatabase)
         primary.query.return_value = ["primary"]

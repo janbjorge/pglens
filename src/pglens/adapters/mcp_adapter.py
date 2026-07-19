@@ -25,7 +25,7 @@ class Databases:
         key = name or self.default_alias
         if key not in self.databases:
             available = ", ".join(sorted(self.databases)) or "<none>"
-            raise KeyError(
+            raise ValueError(
                 f"Unknown database alias '{key}'. Configured: {available}. "
                 f"Add via PGLENS_DATABASES env var."
             )
@@ -73,9 +73,40 @@ def _collect_databases() -> tuple[list[str], str]:
     return [DEFAULT_DB], DEFAULT_DB
 
 
+def _statement_timeout_ms() -> int:
+    """Statement timeout from PGLENS_STATEMENT_TIMEOUT (seconds).
+
+    Defaults to 60 seconds; 0 disables the timeout.
+    """
+    raw = os.environ.get("PGLENS_STATEMENT_TIMEOUT", "").strip()
+    if not raw:
+        return 60_000
+    try:
+        seconds = int(raw)
+    except ValueError:
+        raise ValueError(
+            f"PGLENS_STATEMENT_TIMEOUT must be an integer number of seconds, got {raw!r}"
+        ) from None
+    if seconds < 0:
+        raise ValueError(f"PGLENS_STATEMENT_TIMEOUT must be >= 0, got {seconds}")
+    return seconds * 1000
+
+
+def _server_settings() -> dict[str, str]:
+    return {
+        "application_name": "pglens",
+        # Belt and braces: methods also use explicit readonly transactions,
+        # but this makes every connection read-only by default.
+        "default_transaction_read_only": "on",
+        # 0 means disabled, matching Postgres semantics.
+        "statement_timeout": str(_statement_timeout_ms()),
+    }
+
+
 @asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[Databases]:
+async def app_lifespan(_server: FastMCP) -> AsyncIterator[Databases]:
     names, default_alias = _collect_databases()
+    server_settings = _server_settings()
     async with AsyncExitStack() as stack:
         databases: dict[str, AsyncpgDatabase] = {}
         for name in names:
@@ -83,7 +114,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[Databases]:
             # let libpq env (including PGDATABASE) decide the dbname.
             dbname = None if name == DEFAULT_DB and len(names) == 1 else name
             pool = await stack.enter_async_context(
-                asyncpg.create_pool(database=dbname, min_size=1, max_size=5)
+                asyncpg.create_pool(
+                    database=dbname,
+                    min_size=1,
+                    max_size=5,
+                    server_settings=server_settings,
+                )
             )
             databases[name] = AsyncpgDatabase(pool)
         yield Databases(databases, default_alias)
