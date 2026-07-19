@@ -38,7 +38,7 @@ AsyncpgDatabase (adapters/asyncpg_adapter.py)  ←  all SQL lives here
 asyncpg pool → PostgreSQL (readonly transactions)
 ```
 
-- **`src/pglens/adapters/asyncpg_adapter.py`** — Single file containing all database methods (~28). Every query runs in `transaction(readonly=True)` and uses `quote_ident()` for identifiers.
+- **`src/pglens/adapters/asyncpg_adapter.py`** — Single file containing all database methods (~28). Connections are read-only at the server level (`default_transaction_read_only=on` via pool `server_settings`, plus a statement timeout and `application_name=pglens`); user-influenced queries also use `transaction(readonly=True)`. Identifiers are quoted with `quote_ident()` from `core/sql.py`.
 - **`src/pglens/adapters/mcp_adapter.py`** — Creates the FastMCP server, manages the asyncpg pool lifespan, and imports tool modules (which register themselves via decorators at import time).
 - **`src/pglens/adapters/tools/`** — Tool modules organized by category: `schema.py`, `exploration.py`, `query.py`, `health.py`, `safety.py`. Each tool is a thin wrapper that calls the corresponding `AsyncpgDatabase` method.
 - **`src/pglens/core/types.py`** — `Annotated` type aliases (e.g., `Schema`, `TableName`, `SQL`) whose descriptions surface in MCP tool schemas.
@@ -50,7 +50,7 @@ asyncpg pool → PostgreSQL (readonly transactions)
 
 ## Key conventions
 
-- **SQL safety**: Always use `quote_ident()` for identifiers, parameterized queries (`$1`, `$2`) for values, and `readonly=True` transactions.
+- **SQL safety**: Always use `quote_ident()` (from `core/sql.py`) for identifiers, parameterized queries (`$1`, `$2`) for values, and `readonly=True` transactions. User SQL goes through `validate_select()`, which parses the statement with pglast, rejects anything that is not a single plain SELECT (no multi-statement input, no `SELECT INTO`, no writes hidden in CTEs, no `$n` placeholders), and returns normalized SQL that is safe to embed in a subquery.
 - **Parameter types**: Use `Annotated` types from `core/types.py` for all MCP tool parameters.
 - **Return values**: Convert asyncpg Records to dicts (`[dict(r) for r in rows]`) for JSON serialization.
 - **Schema default**: Most tools default the schema parameter to `"public"`.

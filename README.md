@@ -21,7 +21,7 @@ AI agent (MCP client)  ──►  pglens  ──►  your PostgreSQL
 2. pglens connects to PostgreSQL using standard libpq environment variables and opens a connection pool.
 3. The agent calls pglens tools to introspect the schema, sample data, run read-only queries, and inspect health, instead of guessing.
 
-Every query runs inside a `readonly=True` transaction, identifiers are escaped with PostgreSQL's `quote_ident()`, and no DDL tools are exposed. All introspection uses `pg_catalog` directly, so no PostgreSQL extensions are needed. See [Safety](#safety).
+pglens opens read-only connections (`default_transaction_read_only=on`), quotes every identifier, and runs each statement under a timeout. No DDL tools are exposed. All introspection uses `pg_catalog` directly, so no PostgreSQL extensions are needed. See [Safety](#safety).
 
 ## Tools
 
@@ -140,6 +140,7 @@ pglens reads standard PostgreSQL environment variables (libpq). Connection strin
 | `PGSSLMODE` | no | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` |
 | `PGSERVICE`, `PGPASSFILE`, `PGAPPNAME`, … | no | Other libpq env vars, honored by asyncpg automatically |
 | `PGLENS_DATABASES` | no | Comma-separated extra dbnames on the same host (see [Multiple databases](#multiple-databases)) |
+| `PGLENS_STATEMENT_TIMEOUT` | no (default 60) | Per-statement timeout in seconds; `0` disables it |
 
 No connection-string env vars are read. Configuration is libpq env vars only.
 
@@ -266,8 +267,12 @@ uvx pglens --transport streamable-http
 
 ## Safety
 
-- All user-influenced queries run inside `readonly=True` transactions.
-- Table and column identifiers are escaped via PostgreSQL's `quote_ident()`; values are passed as parameters (`$1`, `$2`).
+- Every connection sets `default_transaction_read_only=on`, so the server itself refuses writes. User-influenced queries also run inside explicit `readonly=True` transactions.
+- pglens parses SQL for `query` and `explain_query` with PostgreSQL's own parser (via pglast) and accepts only a single SELECT statement. It rejects `SELECT INTO`, data-modifying CTEs like `WITH x AS (DELETE ...)`, and multi-statement input before anything reaches the database.
+- The same validation rejects parameter placeholders (`$1`, `$2`). Inline literal values instead.
+- A statement timeout (`PGLENS_STATEMENT_TIMEOUT`, default 60 s) bounds every query, so a runaway `COUNT(*)` or `EXPLAIN ANALYZE` cannot hog the server.
+- pglens always quotes table and column identifiers; internal values go through bind parameters.
+- Connections set `application_name = 'pglens'`, which makes them easy to spot in `pg_stat_activity`.
 - No DDL tools are exposed.
 
 ## How it's built
