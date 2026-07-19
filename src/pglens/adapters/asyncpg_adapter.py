@@ -558,19 +558,19 @@ class AsyncpgDatabase:
         analyze: bool = False,
         buffers: bool = False,
     ) -> str:
-        validate_select(sql)
+        normalized = validate_select(sql, allow_cursor=True)
         options = f"ANALYZE {analyze}, BUFFERS {buffers}, FORMAT TEXT"
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
-                rows = await conn.fetch(f"EXPLAIN ({options}) {sql}")
+                rows = await conn.fetch(f"EXPLAIN ({options}) {normalized}")
                 return "\n".join(r["QUERY PLAN"] for r in rows)
 
     async def query(self, sql: str, limit: int = 500, offset: int = 0) -> list[dict[str, object]]:
-        validate_select(sql)
+        normalized = validate_select(sql)
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 rows = await conn.fetch(
-                    f"SELECT * FROM ({sql}) sub LIMIT $1 OFFSET $2",
+                    f"SELECT * FROM ({normalized}) sub LIMIT $1 OFFSET $2",
                     min(max(limit, 1), 500),
                     max(offset, 0),
                 )

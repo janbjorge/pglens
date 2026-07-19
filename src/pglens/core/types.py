@@ -16,7 +16,8 @@ TableName = Annotated[str, "Table name without schema prefix, e.g. 'orders' not 
 
 SQL = Annotated[
     str,
-    "Read-only SQL query. Use $1, $2 for parameters. "
+    "Read-only SQL SELECT statement. Inline literal values directly; parameter "
+    "placeholders ($1, $2) are not supported and are rejected. "
     "Prefer specific columns over SELECT *. "
     "Use JOINs from describe_table/find_related_tables output.",
 ]

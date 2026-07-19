@@ -385,14 +385,50 @@ class TestValidateSelect:
             validate_select("DELETE FROM users")
 
     def test_allows_declare_cursor_with_select(self) -> None:
-        validate_select("DECLARE cur CURSOR FOR SELECT 1")
+        validate_select("DECLARE cur CURSOR FOR SELECT 1", allow_cursor=True)
 
     def test_allows_declare_cursor_with_cte(self) -> None:
-        validate_select("DECLARE cur CURSOR FOR WITH cte AS (SELECT 1) SELECT * FROM cte")
+        validate_select(
+            "DECLARE cur CURSOR FOR WITH cte AS (SELECT 1) SELECT * FROM cte",
+            allow_cursor=True,
+        )
+
+    def test_rejects_declare_cursor_by_default(self) -> None:
+        with pytest.raises(ValueError, match="DECLARE CURSOR"):
+            validate_select("DECLARE cur CURSOR FOR SELECT 1")
 
     def test_rejects_invalid_sql(self) -> None:
         with pytest.raises(Exception):
             validate_select("NOT VALID SQL")
+
+    def test_returns_normalized_sql(self) -> None:
+        # Trailing semicolons and comments would break the query() subquery wrap
+        assert validate_select("SELECT 1;") == "SELECT 1"
+        assert validate_select("SELECT 1 ; -- trailing comment") == "SELECT 1"
+
+    def test_rejects_select_into(self) -> None:
+        with pytest.raises(ValueError, match="SELECT INTO"):
+            validate_select("SELECT * INTO evil FROM users")
+
+    def test_rejects_select_into_in_set_operation(self) -> None:
+        with pytest.raises(ValueError, match="SELECT INTO"):
+            validate_select("SELECT 1 INTO evil UNION SELECT 2")
+
+    @pytest.mark.parametrize(
+        "sql, verb",
+        [
+            ("WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x", "DELETE"),
+            ("WITH x AS (UPDATE users SET a = 1 RETURNING *) SELECT * FROM x", "UPDATE"),
+            ("WITH x AS (INSERT INTO users DEFAULT VALUES RETURNING *) SELECT * FROM x", "INSERT"),
+        ],
+    )
+    def test_rejects_writes_hidden_in_cte(self, sql: str, verb: str) -> None:
+        with pytest.raises(ValueError, match=verb):
+            validate_select(sql)
+
+    def test_rejects_parameter_placeholders(self) -> None:
+        with pytest.raises(ValueError, match="placeholders"):
+            validate_select("SELECT * FROM users WHERE id = $1")
 
     async def test_query_validates_before_executing(self) -> None:
         conn = mock_conn(fetch_return=[])
@@ -411,6 +447,26 @@ class TestValidateSelect:
         with pytest.raises(ValueError):
             await db.explain_query("DELETE FROM users")
         conn.fetch.assert_not_called()
+
+    async def test_query_rejects_declare_cursor(self) -> None:
+        conn = mock_conn(fetch_return=[])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        with pytest.raises(ValueError, match="DECLARE CURSOR"):
+            await db.query("DECLARE cur CURSOR FOR SELECT 1")
+        conn.fetch.assert_not_called()
+
+    async def test_query_strips_trailing_semicolon(self) -> None:
+        conn = mock_conn(fetch_return=[])
+        pool = mock_pool_with_conn(conn)
+        db = AsyncpgDatabase(pool=pool)
+
+        await db.query("SELECT 1;")
+
+        sql = conn.fetch.call_args[0][0]
+        assert ";" not in sql.replace("LIMIT $1 OFFSET $2", "")
+        assert "SELECT * FROM (SELECT 1) sub" in sql
 
 
 class TestListSchemas:

@@ -292,6 +292,14 @@ class TestQueryExecution:
         plan = await db.explain_query("SELECT * FROM users WHERE id = 1")
         assert "users" in plan.lower()
 
+    async def test_query_with_trailing_semicolon(self, db: AsyncpgDatabase) -> None:
+        result = await db.query("SELECT count(*) AS n FROM users;")
+        assert result == [{"n": 3}]
+
+    async def test_query_with_trailing_comment(self, db: AsyncpgDatabase) -> None:
+        result = await db.query("SELECT count(*) AS n FROM users -- how many?")
+        assert result == [{"n": 3}]
+
 
 class TestSQLParsingDefense:
     """Verify that SQL validation blocks dangerous queries against a real database."""
@@ -331,6 +339,18 @@ class TestSQLParsingDefense:
     async def test_explain_blocks_non_select(self, db: AsyncpgDatabase) -> None:
         with pytest.raises(ValueError, match="Only SELECT"):
             await db.explain_query("DELETE FROM users")
+
+    async def test_query_blocks_select_into(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="SELECT INTO"):
+            await db.query("SELECT * INTO evil_copy FROM users")
+
+    async def test_query_blocks_write_in_cte(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="DELETE"):
+            await db.query("WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x")
+
+    async def test_query_blocks_parameter_placeholders(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="placeholders"):
+            await db.query("SELECT * FROM users WHERE id = $1")
 
     async def test_data_unchanged_after_blocked_attacks(self, db: AsyncpgDatabase) -> None:
         """Verify that blocked attacks didn't modify data."""
