@@ -464,14 +464,36 @@ class TestMatviewsAndDependencies:
 
     async def test_object_dependencies_table(self, db: AsyncpgDatabase) -> None:
         deps = await db.object_dependencies("users", "table", "public")
-        assert isinstance(deps, list)
-        # Should return some dependencies (constraints, rules, sequences, etc.)
-        # The exact set depends on PG internals, so just verify it runs and returns results
-        assert len(deps) >= 0
+        # The view active_orders and matview order_summary select from users
+        # and must be reported as real relations, not internal _RETURN rules.
+        by_name = {d["dependent_name"]: d for d in deps}
+        assert "active_orders" in by_name
+        assert by_name["active_orders"]["dependent_type"] == "view"
+        assert by_name["active_orders"]["dependent_schema"] == "public"
+        assert "order_summary" in by_name
+        assert by_name["order_summary"]["dependent_type"] == "matview"
+        assert "_RETURN" not in by_name
+
+    async def test_object_dependencies_excludes_own_indexes(self, db: AsyncpgDatabase) -> None:
+        deps = await db.object_dependencies("users", "table", "public")
+        names = {d["dependent_name"] for d in deps}
+        assert "idx_users_bio" not in names
+        assert "users_pkey" not in names
+
+    async def test_object_dependencies_view(self, db: AsyncpgDatabase) -> None:
+        deps = await db.object_dependencies("active_orders", "view", "public")
+        # The view's own _RETURN rule must not be reported as a dependent
+        names = {d["dependent_name"] for d in deps}
+        assert "active_orders" not in names
+        assert "_RETURN" not in names
 
     async def test_object_dependencies_function(self, db: AsyncpgDatabase) -> None:
         deps = await db.object_dependencies("update_modified_column", "function", "public")
         assert isinstance(deps, list)
+
+    async def test_object_dependencies_rejects_unknown_type(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="Unknown object_type"):
+            await db.object_dependencies("users", "veiw", "public")
 
 
 class TestSafeRefs:

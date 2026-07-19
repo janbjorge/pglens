@@ -22,7 +22,10 @@ def object_type_to_relkind(object_type: str) -> str:
         case "index":
             return "i"
         case _:
-            return "r"
+            raise ValueError(
+                f"Unknown object_type {object_type!r}. Expected one of: "
+                "'table', 'view', 'matview', 'function', 'sequence', 'index'"
+            )
 
 
 @dataclass
@@ -680,10 +683,9 @@ class AsyncpgDatabase:
                 for r in await self.pool.fetch(
                     """
                     WITH target AS (
-                        SELECT oid FROM pg_proc
-                        WHERE proname = $1
-                            AND pronamespace = $2::regnamespace
-                        LIMIT 1
+                        SELECT p.oid FROM pg_proc p
+                        JOIN pg_namespace n ON p.pronamespace = n.oid
+                        WHERE p.proname = $1 AND n.nspname = $2
                     )
                     SELECT DISTINCT
                         dep_ns.nspname AS dependent_schema,
@@ -710,7 +712,6 @@ class AsyncpgDatabase:
             ]
 
         relkind = object_type_to_relkind(object_type)
-        escaped_name = object_name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -734,20 +735,31 @@ class AsyncpgDatabase:
                             END
                         WHEN 'pg_proc'::regclass THEN 'function'
                         WHEN 'pg_constraint'::regclass THEN 'constraint'
-                        WHEN 'pg_rewrite'::regclass THEN 'rule'
+                        WHEN 'pg_attrdef'::regclass THEN 'column default'
+                        WHEN 'pg_rewrite'::regclass THEN
+                            CASE rw_cl.relkind
+                                WHEN 'v' THEN 'view'
+                                WHEN 'm' THEN 'matview'
+                                ELSE 'rule'
+                            END
                         ELSE d.classid::regclass::text
                     END AS dependent_type,
                     CASE d.classid
                         WHEN 'pg_class'::regclass THEN dep_cl.relname
                         WHEN 'pg_proc'::regclass THEN dep_proc.proname
                         WHEN 'pg_constraint'::regclass THEN dep_con.conname
-                        WHEN 'pg_rewrite'::regclass THEN dep_rw.rulename
+                        WHEN 'pg_attrdef'::regclass
+                            THEN ad_cl.relname || '.' || ad_att.attname
+                        WHEN 'pg_rewrite'::regclass
+                            THEN coalesce(rw_cl.relname, dep_rw.rulename)
                         ELSE d.objid::text
                     END AS dependent_name,
                     CASE d.classid
                         WHEN 'pg_class'::regclass THEN dep_ns.nspname
                         WHEN 'pg_proc'::regclass THEN proc_ns.nspname
                         WHEN 'pg_constraint'::regclass THEN con_ns.nspname
+                        WHEN 'pg_attrdef'::regclass THEN ad_ns.nspname
+                        WHEN 'pg_rewrite'::regclass THEN rw_ns.nspname
                         ELSE NULL
                     END AS dependent_schema
                 FROM pg_depend d
@@ -755,25 +767,39 @@ class AsyncpgDatabase:
                 LEFT JOIN pg_class dep_cl ON d.classid = 'pg_class'::regclass
                     AND d.objid = dep_cl.oid
                 LEFT JOIN pg_namespace dep_ns ON dep_cl.relnamespace = dep_ns.oid
+                LEFT JOIN pg_index dep_ix ON dep_cl.relkind = 'i'
+                    AND dep_ix.indexrelid = dep_cl.oid
                 LEFT JOIN pg_proc dep_proc ON d.classid = 'pg_proc'::regclass
                     AND d.objid = dep_proc.oid
                 LEFT JOIN pg_namespace proc_ns ON dep_proc.pronamespace = proc_ns.oid
                 LEFT JOIN pg_constraint dep_con ON d.classid = 'pg_constraint'::regclass
                     AND d.objid = dep_con.oid
                 LEFT JOIN pg_namespace con_ns ON dep_con.connamespace = con_ns.oid
+                LEFT JOIN pg_attrdef dep_ad ON d.classid = 'pg_attrdef'::regclass
+                    AND d.objid = dep_ad.oid
+                LEFT JOIN pg_class ad_cl ON dep_ad.adrelid = ad_cl.oid
+                LEFT JOIN pg_namespace ad_ns ON ad_cl.relnamespace = ad_ns.oid
+                LEFT JOIN pg_attribute ad_att ON ad_att.attrelid = dep_ad.adrelid
+                    AND ad_att.attnum = dep_ad.adnum
                 LEFT JOIN pg_rewrite dep_rw ON d.classid = 'pg_rewrite'::regclass
                     AND d.objid = dep_rw.oid
+                LEFT JOIN pg_class rw_cl ON dep_rw.ev_class = rw_cl.oid
+                LEFT JOIN pg_namespace rw_ns ON rw_cl.relnamespace = rw_ns.oid
                 WHERE d.deptype IN ('n', 'a')
                     AND d.objid != t.oid
-                    AND NOT (d.classid = 'pg_class'::regclass
-                             AND dep_cl.relkind = 'i'
-                             AND dep_cl.relname LIKE $4 || '%')
+                    -- the target's own indexes are part of it, not dependents
+                    AND dep_ix.indrelid IS DISTINCT FROM t.oid
+                    -- the target's own constraints (PK, unique, check) likewise
+                    AND dep_con.conrelid IS DISTINCT FROM t.oid
+                    -- the target's own column defaults likewise
+                    AND dep_ad.adrelid IS DISTINCT FROM t.oid
+                    -- a view's own _RETURN rule depends on the view itself
+                    AND dep_rw.ev_class IS DISTINCT FROM t.oid
                 ORDER BY dependent_type, dependent_name
                 """,
                 object_name,
                 schema,
                 relkind,
-                escaped_name,
             )
         ]
 
