@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is pglens?
 
-A Model Context Protocol (MCP) server that gives AI agents read-only introspection into PostgreSQL databases. 28 tools across schema discovery, data exploration, query execution, and performance monitoring — all using `pg_catalog` with no extensions required.
+A Model Context Protocol (MCP) server that gives AI agents read-only introspection into PostgreSQL databases. 31 tools across schema discovery, data exploration, query execution, and performance monitoring, all using `pg_catalog` with no extensions required.
 
 ## Commands
 
@@ -39,7 +39,7 @@ asyncpg pool → PostgreSQL (readonly transactions)
 ```
 
 - **`src/pglens/adapters/asyncpg_adapter.py`** — Single file containing all database methods (~28). Connections are read-only at the server level (`default_transaction_read_only=on` via pool `server_settings`, plus a statement timeout and `application_name=pglens`); user-influenced queries also use `transaction(readonly=True)`. Identifiers are quoted with `quote_ident()` from `core/sql.py`.
-- **`src/pglens/adapters/mcp_adapter.py`** — Creates the FastMCP server, manages the asyncpg pool lifespan, and imports tool modules (which register themselves via decorators at import time).
+- **`src/pglens/adapters/mcp_adapter.py`** — Creates the `MCPServer` (mcp 2.x) server, manages the asyncpg pool lifespan, and imports tool modules (which register themselves via decorators at import time).
 - **`src/pglens/adapters/tools/`** — Tool modules organized by category: `schema.py`, `exploration.py`, `query.py`, `health.py`, `safety.py`. Each tool is a thin wrapper that calls the corresponding `AsyncpgDatabase` method.
 - **`src/pglens/core/types.py`** — `Annotated` type aliases (e.g., `Schema`, `TableName`, `SQL`) whose descriptions surface in MCP tool schemas.
 

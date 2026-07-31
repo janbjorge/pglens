@@ -1,12 +1,12 @@
 # pglens
 
-Read-only PostgreSQL introspection for AI agents — 28 MCP tools for schema discovery, data exploration, query execution, and health monitoring. Pure `pg_catalog`, no extensions required.
+Read-only PostgreSQL introspection for AI agents. 31 MCP tools for schema discovery, data exploration, query execution, and health monitoring. Pure `pg_catalog`, no extensions required.
 
 ## Why pglens
 
 Most Postgres MCP servers expose `query` and `list_tables`, and little else. Agents end up guessing column names, enum values, and join paths, burning several failed attempts before landing on working SQL.
 
-pglens closes those gaps: it lets the agent check what values actually exist in a column, discover foreign-key relationships, preview sample data, and validate query plans — so it can look before it leaps.
+pglens closes those gaps. The agent can check what values actually exist in a column, discover foreign-key relationships, preview sample data, and validate a query plan before running it.
 
 > **`column_values` in particular:** agents frequently write `WHERE status = 'active'` when the real value is `'Active'` or `'enabled'`. `column_values` returns the actual distinct values with counts, so the agent picks the right one instead of guessing.
 
@@ -21,7 +21,7 @@ AI agent (MCP client)  ──►  pglens  ──►  your PostgreSQL
 2. pglens connects to PostgreSQL using standard libpq environment variables and opens a connection pool.
 3. The agent calls pglens tools to introspect the schema, sample data, run read-only queries, and inspect health, instead of guessing.
 
-pglens opens read-only connections (`default_transaction_read_only=on`), quotes every identifier, and runs each statement under a timeout. No DDL tools are exposed. All introspection uses `pg_catalog` directly, so no PostgreSQL extensions are needed. See [Safety](#safety).
+pglens opens read-only connections (`default_transaction_read_only=on`), quotes every identifier, and runs each statement under a timeout. It exposes no DDL tools. All introspection uses `pg_catalog` directly, so no PostgreSQL extensions are needed. See [Safety](#safety).
 
 ## Tools
 
@@ -93,7 +93,7 @@ There is also a `query_guide` prompt that describes a reasonable workflow for us
 uvx pglens
 ```
 
-There is nothing to upgrade; each launch resolves the newest release. Pin a version when you need: `uvx pglens@0.4.0`.
+There is nothing to upgrade; each launch resolves the newest release. Pin a version when you need: `uvx pglens@1.1.0`.
 
 ### pip
 
@@ -142,7 +142,7 @@ pglens reads standard PostgreSQL environment variables (libpq). Connection strin
 | `PGLENS_DATABASES` | no | Comma-separated extra dbnames on the same host (see [Multiple databases](#multiple-databases)) |
 | `PGLENS_STATEMENT_TIMEOUT` | no (default 60) | Per-statement timeout in seconds; `0` disables it |
 
-No connection-string env vars are read. Configuration is libpq env vars only.
+pglens reads no connection-string env vars. Configuration goes through libpq env vars only.
 
 To run pglens directly from a shell (e.g. for testing):
 
@@ -214,7 +214,7 @@ If you installed pglens with `pip` instead of using `uvx`, replace `"command": "
 
 ### Multiple databases
 
-Every tool accepts an optional `database` argument to target an alternate connection. This is useful for Postgres setups that expose system metrics in a separate database — for example, Azure Database for PostgreSQL Flexible Server keeps server metrics in `azure_sys`.
+Every tool accepts an optional `database` argument to target an alternate connection. This is useful for Postgres setups that expose system metrics in a separate database. Azure Database for PostgreSQL Flexible Server, for example, keeps server metrics in `azure_sys`.
 
 `PGDATABASE` is the primary alias and the default target when a tool is called without `database=`. List any additional dbnames on the same host in `PGLENS_DATABASES`; each becomes its own alias with its own pool. Host, user, password, and TLS mode come from the standard libpq env vars and are shared across every pool:
 
@@ -273,21 +273,21 @@ uvx pglens --transport streamable-http
 - A statement timeout (`PGLENS_STATEMENT_TIMEOUT`, default 60 s) bounds every query, so a runaway `COUNT(*)` or `EXPLAIN ANALYZE` cannot hog the server.
 - pglens always quotes table and column identifiers; internal values go through bind parameters.
 - Connections set `application_name = 'pglens'`, which makes them easy to spot in `pg_stat_activity`.
-- No DDL tools are exposed.
+- pglens exposes no DDL tools.
 
 ## How it's built
 
 ```
 adapters/tools/*.py          (MCP tool definitions, organized by category)
         │
-adapters/mcp_adapter.py      (FastMCP server, lifespan, pool management)
+adapters/mcp_adapter.py      (MCPServer, lifespan, pool management)
         │
 adapters/asyncpg_adapter.py  (SQL queries, asyncpg pool)
         │
    PostgreSQL
 ```
 
-`AsyncpgDatabase` holds the asyncpg pool and all query methods. Tool modules in `adapters/tools/` are thin wrappers that register MCP tools via decorators and delegate to it. All queries use pure `pg_catalog` introspection — no PostgreSQL extensions required.
+`AsyncpgDatabase` holds the asyncpg pool and all query methods. Tool modules in `adapters/tools/` are thin wrappers that register MCP tools via decorators and delegate to it. All queries use pure `pg_catalog` introspection, so no PostgreSQL extensions are required.
 
 **Adding a tool:**
 
