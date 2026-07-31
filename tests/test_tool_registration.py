@@ -56,8 +56,8 @@ EXPECTED_TOOLS: dict[str, str | None] = {
 
 
 def _registered_tool_names() -> set[str]:
-    """Extract tool names from the FastMCP server."""
-    # FastMCP stores tools in _tool_manager._tools dict
+    """Extract tool names from the MCP server."""
+    # MCPServer stores tools in _tool_manager._tools dict
     tools = mcp._tool_manager._tools
     return set(tools.keys())
 

@@ -6,8 +6,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 import asyncpg
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.session import ServerSession
+from mcp.server.mcpserver import Context, MCPServer
 
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
 
@@ -35,7 +34,7 @@ class Databases:
         return sorted(self.databases)
 
 
-Ctx = Context[ServerSession, Databases, object]
+Ctx = Context[Databases, object]
 
 
 def _collect_databases() -> tuple[list[str], str]:
@@ -104,7 +103,7 @@ def _server_settings() -> dict[str, str]:
 
 
 @asynccontextmanager
-async def app_lifespan(_server: FastMCP) -> AsyncIterator[Databases]:
+async def app_lifespan(_server: MCPServer[Databases]) -> AsyncIterator[Databases]:
     names, default_alias = _collect_databases()
     server_settings = _server_settings()
     async with AsyncExitStack() as stack:
@@ -125,7 +124,7 @@ async def app_lifespan(_server: FastMCP) -> AsyncIterator[Databases]:
         yield Databases(databases, default_alias)
 
 
-mcp = FastMCP("pglens", lifespan=app_lifespan)
+mcp = MCPServer("pglens", lifespan=app_lifespan)
 
 
 def db(ctx: Ctx, database: str | None = None) -> AsyncpgDatabase:

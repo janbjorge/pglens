@@ -7,7 +7,11 @@ requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
     "asyncpg>=0.29",
-    "mcp>=1.0",
+    # Lower bound: mcp 2.0 replaced mcp.server.fastmcp with mcp.server.mcpserver
+    # (FastMCP -> MCPServer, Context lost its ServerSession type parameter);
+    # mcp < 2 cannot import mcp_adapter.py at all.
+    # Upper bound: guard against the next API break landing silently.
+    "mcp>=2,<3",
     "pglast>=7.13",
 ]
 
