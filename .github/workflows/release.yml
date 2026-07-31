@@ -12,6 +12,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # hatch-vcs derives the version from the git tag, so the tag history
+          # has to be present. A shallow checkout yields a dev version with a
+          # +local segment, which PyPI rejects.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
