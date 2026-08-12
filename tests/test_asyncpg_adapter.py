@@ -118,29 +118,110 @@ class TestListIndexes:
         result = await db.list_indexes("public")
         assert result == []
 
+    async def test_list_indexes_selects_validity(
+        self, db: AsyncpgDatabase, pool: AsyncMock
+    ) -> None:
+        pool.fetch.return_value = []
+        await db.list_indexes("public")
+        assert "indisvalid" in pool.fetch.call_args[0][0]
 
-class TestTableRowCounts:
-    async def test_table_row_counts_returns_exact(self) -> None:
-        conn = mock_conn()
-        pool = mock_pool_with_conn(conn)
-        conn.fetchrow.return_value = make_record(exact_count=42)
-        db = AsyncpgDatabase(pool=pool)
+    async def test_unused_indexes_selects_validity(
+        self, db: AsyncpgDatabase, pool: AsyncMock
+    ) -> None:
+        pool.fetch.return_value = []
+        await db.unused_indexes("public")
+        assert "indisvalid" in pool.fetch.call_args[0][0]
 
-        result = await db.table_row_counts("users", "public")
-        assert result["table"] == "public.users"
-        assert result["exact_count"] == 42
 
-    async def test_table_row_counts_uses_readonly_transaction(self) -> None:
-        conn = mock_conn()
-        pool = mock_pool_with_conn(conn)
-        conn.fetchrow.return_value = make_record(exact_count=0)
-        db = AsyncpgDatabase(pool=pool)
+class TestTableHealth:
+    async def test_returns_merged_stats_and_bloat_columns(
+        self, db: AsyncpgDatabase, pool: AsyncMock
+    ) -> None:
+        pool.fetch.return_value = [
+            make_record(
+                table_name="users",
+                seq_scan=10,
+                idx_scan=90,
+                index_hit_pct=90.0,
+                n_live_tup=1000,
+                n_dead_tup=50,
+                dead_tuple_pct=5.0,
+                xid_age=12345,
+                wraparound_pct=6.2,
+                last_vacuum=None,
+                last_autovacuum=None,
+                last_analyze=None,
+                last_autoanalyze=None,
+            ),
+        ]
+        result = await db.table_health("public")
+        assert result[0]["index_hit_pct"] == 90.0
+        assert result[0]["xid_age"] == 12345
+        assert result[0]["wraparound_pct"] == 6.2
 
-        await db.table_row_counts("users", "public")
+    async def test_joins_pg_class_by_relid(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+        pool.fetch.return_value = []
+        await db.table_health("public")
+        sql = pool.fetch.call_args[0][0]
+        # xid age must come from pg_class joined by oid, not by table name,
+        # so same-named tables in other schemas cannot collide
+        assert "relfrozenxid" in sql
+        assert "c.oid = s.relid" in sql
 
-        # Verify the SQL contains count(*)
-        sql = conn.fetchrow.call_args[0][0]
-        assert "count(*)" in sql.lower()
+
+class TestSlowQueries:
+    async def test_missing_extension_returns_error_entry(
+        self, db: AsyncpgDatabase, pool: AsyncMock
+    ) -> None:
+        pool.fetchval.return_value = False
+        result = await db.slow_queries(20)
+        assert len(result) == 1
+        assert "pg_stat_statements" in str(result[0]["error"])
+        pool.fetch.assert_not_called()
+
+    async def test_returns_statements_when_installed(
+        self, db: AsyncpgDatabase, pool: AsyncMock
+    ) -> None:
+        pool.fetchval.return_value = True
+        pool.fetch.return_value = [
+            make_record(
+                username="app",
+                database="app",
+                calls=100,
+                total_exec_time_ms=1234.5,
+                mean_exec_time_ms=12.35,
+                stddev_exec_time_ms=1.0,
+                rows=5000,
+                cache_hit_pct=99.1,
+                query="SELECT * FROM orders",
+            ),
+        ]
+        result = await db.slow_queries(20)
+        assert len(result) == 1
+        assert result[0]["calls"] == 100
+
+    async def test_limit_is_clamped(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+        pool.fetchval.return_value = True
+        pool.fetch.return_value = []
+        await db.slow_queries(5000)
+        assert pool.fetch.call_args[0][1] == 100
+        await db.slow_queries(0)
+        assert pool.fetch.call_args[0][1] == 1
+
+
+class TestReplicationStatus:
+    async def test_shape(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+        pool.fetchval.return_value = False
+        pool.fetch.side_effect = [
+            [make_record(application_name="standby1", state="streaming")],
+            [make_record(slot_name="slot1", active=False, retained_wal_bytes=1024)],
+        ]
+        result = await db.replication_status()
+        assert result["in_recovery"] is False
+        standbys = result["standbys"]
+        slots = result["slots"]
+        assert isinstance(standbys, list) and standbys[0]["state"] == "streaming"
+        assert isinstance(slots, list) and slots[0]["active"] is False
 
 
 class TestListMethods:
@@ -265,6 +346,7 @@ class TestDescribeTable:
             ],
             [make_record(column_name="id")],
             [],
+            [],
             [
                 make_record(
                     index_name="orders_pkey",
@@ -282,6 +364,7 @@ class TestDescribeTable:
         assert isinstance(columns, list) and len(columns) == 1
         assert result["primary_keys"] == ["id"]
         assert result["foreign_keys"] == []
+        assert result["referenced_by"] == []
         indexes = result["indexes"]
         assert isinstance(indexes, list) and len(indexes) == 1
         assert result["check_constraints"] == []

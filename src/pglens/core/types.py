@@ -6,8 +6,8 @@ Database = Annotated[
     str | None,
     "Database alias to target. Default None uses the primary alias (PGDATABASE). "
     "Configure extra aliases via PGLENS_DATABASES=azure_sys,analytics (each name is a "
-    "Postgres dbname on the same host, sharing libpq env credentials). Call list_databases "
-    "to see what is configured.",
+    "Postgres dbname on the same host, sharing libpq env credentials). Call database_info "
+    "to see what is configured (available_databases).",
 ]
 
 Schema = Annotated[str, "Postgres schema name, defaults to 'public'"]
@@ -19,7 +19,7 @@ SQL = Annotated[
     "Read-only SQL SELECT statement. Inline literal values directly; parameter "
     "placeholders ($1, $2) are not supported and are rejected. "
     "Prefer specific columns over SELECT *. "
-    "Use JOINs from describe_table/find_related_tables output.",
+    "Use JOINs from describe_table (foreign_keys/referenced_by) or find_join_path output.",
 ]
 
 ColumnKeyword = Annotated[
@@ -40,6 +40,11 @@ SearchKeyword = Annotated[str, "Text to search for (case-insensitive substring m
 SampleSize = Annotated[int, "Number of sample rows to return (1-100)"]
 
 TopN = Annotated[int, "Number of distinct values to return, ordered by frequency"]
+
+TopQueries = Annotated[
+    int,
+    "Number of statements to return, ordered by total execution time descending (1-100).",
+]
 
 ObjectName = Annotated[
     str,

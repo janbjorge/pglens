@@ -12,24 +12,18 @@ from pglens.core.types import (
 
 
 @mcp.tool()
-async def list_databases(ctx: Ctx) -> list[str]:
-    """List configured database aliases that can be passed as the `database` argument.
-    The first alias is the primary (PGDATABASE) and is used when `database` is omitted.
-    Extra aliases come from PGLENS_DATABASES (comma-separated dbnames on the same host,
-    sharing the libpq env credentials). Use this to discover targets such as Azure's
-    `azure_sys` system-metric database.
-    """
-    return databases(ctx).names()
-
-
-@mcp.tool()
 async def database_info(ctx: Ctx, database: Database = None) -> dict[str, object]:
     """Get PostgreSQL server and database identity: version, database name, current user,
-    encoding, timezone, max_connections, uptime, and total database size.
-    Call this first when you need to know the Postgres version (to use version-appropriate
-    SQL syntax), verify which database you are connected to, or check server capacity.
+    encoding, timezone, max_connections, uptime, total database size, and the configured
+    database aliases (`available_databases`) that can be passed as the `database` argument
+    on any tool. The first alias is the primary (PGDATABASE); extras come from
+    PGLENS_DATABASES. Call this first when you need to know the Postgres version
+    (to use version-appropriate SQL syntax), verify which database you are connected to,
+    or discover targets such as Azure's `azure_sys` system-metric database.
     """
-    return await db(ctx, database).database_info()
+    info = await db(ctx, database).database_info()
+    info["available_databases"] = databases(ctx).names()
+    return info
 
 
 @mcp.tool()
@@ -76,23 +70,11 @@ async def describe_table(
     database: Database = None,
 ) -> dict[str, object]:
     """Get detailed table structure: columns, types, defaults, nullability,
-    primary keys, foreign keys, indexes, and check constraints.
-    Call this before writing queries against a table to get correct column names and types.
+    primary keys, foreign keys (both directions), indexes, and check constraints.
+    Call this before writing queries against a table to get correct column names,
+    types, and JOIN conditions.
     """
     return await db(ctx, database).describe_table(table_name, schema)
-
-
-@mcp.tool()
-async def find_related_tables(
-    ctx: Ctx,
-    table_name: TableName,
-    schema: Schema = "public",
-    database: Database = None,
-) -> dict[str, object]:
-    """Show tables that this table references and tables that reference it via foreign keys.
-    Use this to determine correct JOIN conditions between tables.
-    """
-    return await db(ctx, database).find_related_tables(table_name, schema)
 
 
 @mcp.tool()
@@ -117,7 +99,9 @@ async def list_indexes(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
     """List all indexes across every table in the schema: name, table, type (btree/hash/gin/gist),
-    uniqueness, full CREATE INDEX definition, size on disk, and usage stats (scans, tuples read).
+    uniqueness, validity, full CREATE INDEX definition, size on disk, and usage stats
+    (scans, tuples read). is_valid=false means a failed CREATE INDEX CONCURRENTLY left an
+    invalid index that costs writes but serves no reads; drop or rebuild it.
     Use this to audit indexing strategy across the whole schema — unlike describe_table which
     shows indexes for one table, this gives you the big picture. Combine with unused_indexes
     to find waste, or with explain_query to verify a query uses the index you expect.

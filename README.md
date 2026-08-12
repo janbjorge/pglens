@@ -1,6 +1,6 @@
 # pglens
 
-Read-only PostgreSQL introspection for AI agents. 31 MCP tools for schema discovery, data exploration, query execution, and health monitoring. Pure `pg_catalog`, no extensions required.
+Read-only PostgreSQL introspection for AI agents. 29 MCP tools for schema discovery, data exploration, query execution, and health monitoring. Pure `pg_catalog`, no extensions required.
 
 ## Why pglens
 
@@ -29,16 +29,14 @@ pglens opens read-only connections (`default_transaction_read_only=on`), quotes 
 
 | Tool | What it does |
 |---|---|
-| `list_databases` | List configured database aliases (e.g. `default`, `azure_sys`) |
-| `database_info` | Server version, database name, current user, encoding, timezone, uptime, size |
+| `database_info` | Server version, database name, current user, encoding, timezone, uptime, size, configured database aliases |
 | `list_schemas` | Schemas with table and view counts |
 | `list_tables` | Tables with row counts and descriptions |
 | `list_views` | Views with their SQL definitions |
 | `list_extensions` | Installed extensions and versions |
-| `describe_table` | Columns, types, PKs, FKs, indexes, check constraints |
-| `find_related_tables` | FK relationships in both directions |
+| `describe_table` | Columns, types, PKs, FKs (both directions), indexes, check constraints |
 | `find_join_path` | Multi-hop join paths between two tables via foreign keys |
-| `list_indexes` | All indexes across a schema with types, sizes, and usage stats |
+| `list_indexes` | All indexes across a schema with types, sizes, validity, and usage stats |
 | `list_functions` | Stored functions/procedures with source code |
 | `list_triggers` | Triggers on a table with definitions and status |
 | `list_policies` | Row-level security policies on a table |
@@ -47,7 +45,6 @@ pglens opens read-only connections (`default_transaction_read_only=on`), quotes 
 
 | Tool | What it does |
 |---|---|
-| `table_row_counts` | Exact row count via COUNT(*) (vs estimated in list_tables) |
 | `sample_rows` | Random rows from a table |
 | `column_values` | Distinct values with frequency counts |
 | `column_stats` | Min, max, null fraction, distinct count, common values |
@@ -66,14 +63,17 @@ pglens opens read-only connections (`default_transaction_read_only=on`), quotes 
 
 | Tool | What it does |
 |---|---|
-| `table_stats` | Index hit rates, dead tuples, vacuum timestamps |
+| `slow_queries` | Top statements by total execution time (needs `pg_stat_statements`) |
+| `table_health` | Index hit rates, dead tuples, vacuum timestamps, wraparound risk |
 | `table_sizes` | Disk usage per table, ranked by size |
-| `unused_indexes` | Indexes that are never scanned |
-| `bloat_stats` | Dead tuples, vacuum status, wraparound risk |
+| `unused_indexes` | Indexes that are never scanned, including invalid ones |
 | `active_queries` | Currently running sessions and their queries |
 | `blocking_locks` | Lock wait chains (who blocks whom) |
+| `replication_status` | Standby lag and replication slots (inactive slots retain WAL) |
 | `sequence_health` | Sequences approaching exhaustion |
 | `matview_status` | Materialized view freshness and refresh eligibility |
+
+All tools work on a stock PostgreSQL with no extensions. The one exception is `slow_queries`, which reads `pg_stat_statements` when it is installed and returns install instructions when it is not.
 
 ### Safety before DDL
 
@@ -243,10 +243,10 @@ Every tool accepts an optional `database` argument to target an alternate connec
 - If both are unset, a single `default` alias relies on libpq's own default behavior.
 - If the databases you need live on different hosts or require different credentials, run a separate `pglens` server per host with its own `PG*` env block.
 
-Discover what is configured with `list_databases`, then pass the alias as the `database` argument:
+Discover what is configured via `database_info` (the `available_databases` key), then pass the alias as the `database` argument:
 
 ```text
-list_databases() -> ["app", "azure_sys"]
+database_info() -> {..., "available_databases": ["app", "azure_sys"]}
 table_sizes(schema="public", database="azure_sys")
 query(sql="SELECT * FROM query_store.qs_view LIMIT 10", database="azure_sys")
 ```
