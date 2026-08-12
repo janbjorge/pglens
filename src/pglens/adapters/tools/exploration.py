@@ -15,23 +15,6 @@ from pglens.core.types import (
 
 
 @mcp.tool()
-async def table_row_counts(
-    ctx: Ctx,
-    table_name: TableName,
-    schema: Schema = "public",
-    database: Database = None,
-) -> dict[str, object]:
-    """Get the exact row count for a table using COUNT(*).
-    list_tables shows estimated counts from pg_stat (updated by ANALYZE/autovacuum), which
-    can be stale or wildly inaccurate after bulk loads or deletes. Use this tool when you
-    need a precise number — for example, to validate data migrations, verify DELETE results,
-    or compare counts between related tables. Runs a full table scan, so prefer list_tables
-    for a quick estimate and reserve this for when accuracy matters.
-    """
-    return await db(ctx, database).table_row_counts(table_name, schema)
-
-
-@mcp.tool()
 async def sample_rows(
     ctx: Ctx,
     table_name: TableName,

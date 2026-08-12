@@ -1,4 +1,4 @@
-"""Multi-database registry: alias resolution, env discovery, list_databases tool."""
+"""Multi-database registry: alias resolution, env discovery, alias exposure."""
 
 from __future__ import annotations
 
@@ -142,14 +142,17 @@ class TestDbHelper:
         assert db(ctx, "azure_sys") is reg.databases["azure_sys"]
 
 
-class TestListDatabasesTool:
-    async def test_returns_alias_names(self) -> None:
-        reg = _registry(DEFAULT_DB, "azure_sys")
+class TestDatabaseInfoAliases:
+    async def test_database_info_includes_available_databases(self) -> None:
+        primary = AsyncMock(spec=AsyncpgDatabase)
+        primary.database_info.return_value = {"database_name": "app"}
+        reg = Databases({DEFAULT_DB: primary, "azure_sys": AsyncMock(spec=AsyncpgDatabase)})
         ctx = MagicMock()
         ctx.request_context.lifespan_context = reg
-        tool = mcp._tool_manager._tools["list_databases"]
+        tool = mcp._tool_manager._tools["database_info"]
         result = await tool.fn(ctx=ctx)
-        assert result == ["azure_sys", DEFAULT_DB]
+        assert result["database_name"] == "app"
+        assert result["available_databases"] == ["azure_sys", DEFAULT_DB]
 
 
 class TestToolForwardsDatabaseArg:

@@ -145,12 +145,13 @@ You are connected to a PostgreSQL database via MCP tools.
 
 Suggested workflow:
 
-1. `database_info` -- check Postgres version, database name, current user.
+1. `database_info` -- check Postgres version, database name, current user,
+   and configured database aliases (`available_databases`).
 2. `list_schemas` -- discover what schemas exist (not just public).
 3. `list_tables` -- see what exists (names, estimated row counts, descriptions).
-4. `describe_table` -- get column names, types, PKs, FKs, indexes.
-5. `find_related_tables` -- discover direct FK relationships.
-   `find_join_path` -- find how to JOIN two tables that are multiple
+4. `describe_table` -- get column names, types, PKs, FKs (both directions
+   via `foreign_keys`/`referenced_by`), indexes.
+5. `find_join_path` -- find how to JOIN two tables that are multiple
    FKs apart, with exact join conditions for each hop.
 6. `column_values` -- check actual values in low-cardinality columns
    (status, type, category) before writing WHERE clauses.
@@ -171,32 +172,37 @@ Schema and discovery:
 - `list_triggers` -- triggers on a table (can silently modify data).
 - `list_policies` -- row-level security policies (can silently filter rows).
 
-Data validation:
-- `table_row_counts` -- exact row count via COUNT(*) when estimates aren't enough.
-
 Safety before DDL changes:
 - `object_dependencies` -- what views, functions, constraints depend on an
   object. Always check before DROP or ALTER.
 
 Performance and health:
-- `table_stats` -- index hit rates, dead tuples, vacuum timestamps.
+- `slow_queries` -- top statements by total execution time (pg_stat_statements).
+  Start here for performance investigations.
+- `table_health` -- index hit rates, dead tuples, vacuum timestamps, and
+  transaction wraparound risk per table.
 - `table_sizes` -- disk usage per table, ranked by size.
-- `unused_indexes` -- indexes that are never scanned (wasted disk + write overhead).
-- `bloat_stats` -- dead tuples, vacuum status, transaction wraparound risk.
+- `unused_indexes` -- indexes that are never scanned (wasted disk + write
+  overhead), including invalid ones from failed CREATE INDEX CONCURRENTLY.
 - `active_queries` -- currently running sessions and their queries.
 - `blocking_locks` -- lock wait chains (who blocks whom).
+- `replication_status` -- standby lag and replication slots (inactive slots
+  retain WAL and fill disks).
 - `sequence_health` -- sequences approaching exhaustion.
 - `matview_status` -- materialized view freshness and refresh eligibility.
 
 Multi-database:
-- `list_databases` -- list configured database aliases. Pass the alias as the
-  `database` argument on any tool to target it (e.g. `database='azure_sys'`
-  to read Azure system metrics). Default targets the primary alias.
+- `database_info` returns `available_databases`, the configured aliases. Pass
+  an alias as the `database` argument on any tool to target it (e.g.
+  `database='azure_sys'` to read Azure system metrics). Default targets the
+  primary alias.
 
 Tips:
 - Call list_schemas first if you suspect non-public schemas.
 - Call describe_table before querying a table for the first time.
 - Use find_join_path when you need to join tables that aren't directly related.
+- For an exact row count, run `query` with SELECT count(*) (list_tables shows
+  estimates that can be stale after bulk loads).
 - Check enum values and column_stats instead of guessing.
 - Prefer indexed columns in WHERE/JOIN (visible in describe_table).
 - Use specific columns instead of SELECT *.

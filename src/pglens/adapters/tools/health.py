@@ -1,17 +1,19 @@
 """Performance and health monitoring tools."""
 
 from pglens.adapters.mcp_adapter import Ctx, db, mcp
-from pglens.core.types import Database, Schema
+from pglens.core.types import Database, Schema, TopQueries
 
 
 @mcp.tool()
-async def table_stats(
+async def table_health(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
-    """Per-table stats: index hit rates, sequential vs index scan counts, dead tuples,
-    and last vacuum/analyze timestamps. Useful for understanding query performance.
+    """Per-table health: index hit rates, sequential vs index scan counts, live/dead tuples
+    with dead-tuple percentage, transaction ID age and wraparound risk percentage, and last
+    vacuum/analyze timestamps. Tables with high dead_tuple_pct need VACUUM; tables with high
+    wraparound_pct need urgent attention. Use for query performance and maintenance triage.
     """
-    return await db(ctx, database).table_stats(schema)
+    return await db(ctx, database).table_health(schema)
 
 
 @mcp.tool()
@@ -30,20 +32,35 @@ async def unused_indexes(
 ) -> list[dict[str, object]]:
     """List indexes that have never been scanned since the last statistics reset.
     Excludes unique and primary key indexes. Each unused index wastes disk space
-    and slows down writes.
+    and slows down writes. is_valid=false marks an invalid index left behind by a
+    failed CREATE INDEX CONCURRENTLY. It costs writes and serves no reads, so drop
+    or rebuild it.
     """
     return await db(ctx, database).unused_indexes(schema)
 
 
 @mcp.tool()
-async def bloat_stats(
-    ctx: Ctx, schema: Schema = "public", database: Database = None
+async def slow_queries(
+    ctx: Ctx, limit: TopQueries = 20, database: Database = None
 ) -> list[dict[str, object]]:
-    """Per-table bloat indicators: dead tuple count and percentage, transaction ID age,
-    wraparound risk percentage, and vacuum timestamps. Tables with high dead_tuple_pct
-    need VACUUM; tables with high wraparound_pct need urgent attention.
+    """Top SQL statements by total execution time from pg_stat_statements: calls,
+    total/mean/stddev execution time, rows, and shared-buffer cache hit percentage.
+    Start here for performance investigations: it shows where the database spends
+    its time. Requires the pg_stat_statements extension; when the extension is
+    missing, returns a single error entry with install instructions.
     """
-    return await db(ctx, database).bloat_stats(schema)
+    return await db(ctx, database).slow_queries(limit)
+
+
+@mcp.tool()
+async def replication_status(ctx: Ctx, database: Database = None) -> dict[str, object]:
+    """Show replication health: connected standbys from pg_stat_replication (state,
+    sync_state, write/flush/replay lag) and replication slots from pg_replication_slots
+    (active flag, wal_status, retained WAL bytes). An inactive slot retains WAL until
+    the disk fills. Investigate any slot with active=false or a large
+    retained_wal_bytes.
+    """
+    return await db(ctx, database).replication_status()
 
 
 @mcp.tool()

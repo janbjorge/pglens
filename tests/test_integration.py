@@ -171,25 +171,25 @@ class TestDescribeTable:
 
 
 class TestRelationships:
-    async def test_find_related_references(self, db: AsyncpgDatabase) -> None:
-        result = await db.find_related_tables("orders", "public")
-        refs = result["references"]
-        assert len(refs) >= 1
-        assert any(r["to_table"] == "users" for r in refs)
+    async def test_describe_table_outgoing_fks(self, db: AsyncpgDatabase) -> None:
+        result = await db.describe_table("orders", "public")
+        fks = result["foreign_keys"]
+        assert len(fks) >= 1
+        assert any(fk["foreign_table"] == "users" for fk in fks)
 
-    async def test_find_related_referenced_by(self, db: AsyncpgDatabase) -> None:
-        result = await db.find_related_tables("users", "public")
+    async def test_describe_table_referenced_by(self, db: AsyncpgDatabase) -> None:
+        result = await db.describe_table("users", "public")
         refs_by = result["referenced_by"]
         assert len(refs_by) >= 1
         assert any(r["from_table"] == "orders" for r in refs_by)
 
-    async def test_multi_column_fk_related(self, db: AsyncpgDatabase) -> None:
-        """Multi-column FK in find_related_tables returns correct pairs."""
-        result = await db.find_related_tables("warehouses", "public")
-        refs = result["references"]
-        sr_refs = [r for r in refs if r["to_table"] == "shipping_regions"]
+    async def test_multi_column_fk(self, db: AsyncpgDatabase) -> None:
+        """Multi-column FK in describe_table returns correct column pairs."""
+        result = await db.describe_table("warehouses", "public")
+        fks = result["foreign_keys"]
+        sr_refs = [fk for fk in fks if fk["foreign_table"] == "shipping_regions"]
         assert len(sr_refs) == 2
-        pairs = {(r["from_column"], r["to_column"]) for r in sr_refs}
+        pairs = {(fk["column_name"], fk["foreign_column"]) for fk in sr_refs}
         assert ("country_code", "country_code") in pairs
         assert ("region_code", "region_code") in pairs
 
@@ -214,16 +214,6 @@ class TestRelationships:
 
 
 class TestDataExploration:
-    async def test_table_row_counts(self, db: AsyncpgDatabase) -> None:
-        result = await db.table_row_counts("users", "public")
-        assert result["table"] == "public.users"
-        assert result["exact_count"] == 3  # We inserted 3 users
-
-    async def test_table_row_counts_empty_table(self, db: AsyncpgDatabase) -> None:
-        """shipping_regions has 2 rows; order_items has 3."""
-        result = await db.table_row_counts("order_items", "public")
-        assert result["exact_count"] == 3
-
     async def test_sample_rows(self, db: AsyncpgDatabase) -> None:
         rows = await db.sample_rows("users", 10, "public")
         assert len(rows) == 3  # We inserted 3 users
@@ -376,13 +366,15 @@ class TestSQLParsingDefense:
 
 
 class TestHealthMonitoring:
-    async def test_table_stats(self, db: AsyncpgDatabase) -> None:
-        stats = await db.table_stats("public")
+    async def test_table_health(self, db: AsyncpgDatabase) -> None:
+        stats = await db.table_health("public")
         assert len(stats) >= 1
         names = [s["table_name"] for s in stats]
         assert "users" in names
         users_stats = next(s for s in stats if s["table_name"] == "users")
         assert users_stats["n_live_tup"] is not None
+        assert users_stats["xid_age"] is not None
+        assert users_stats["wraparound_pct"] is not None
 
     async def test_table_sizes(self, db: AsyncpgDatabase) -> None:
         sizes = await db.table_sizes("public")
@@ -393,18 +385,25 @@ class TestHealthMonitoring:
         assert users_size["total_size"] is not None
         assert users_size["total_bytes"] > 0
 
-    async def test_bloat_stats(self, db: AsyncpgDatabase) -> None:
-        stats = await db.bloat_stats("public")
-        assert len(stats) >= 1
-        users_bloat = next(s for s in stats if s["table_name"] == "users")
-        assert users_bloat["xid_age"] is not None
-        assert users_bloat["wraparound_pct"] is not None
-
     async def test_unused_indexes(self, db: AsyncpgDatabase) -> None:
         indexes = await db.unused_indexes("public")
         # idx_users_bio was created but never scanned
         idx_names = [i["index_name"] for i in indexes]
         assert "idx_users_bio" in idx_names
+        bio_idx = next(i for i in indexes if i["index_name"] == "idx_users_bio")
+        assert bio_idx["is_valid"] is True
+
+    async def test_slow_queries_without_extension(self, db: AsyncpgDatabase) -> None:
+        result = await db.slow_queries(20)
+        # testcontainers postgres has no pg_stat_statements preloaded
+        assert len(result) == 1
+        assert "pg_stat_statements" in str(result[0]["error"])
+
+    async def test_replication_status(self, db: AsyncpgDatabase) -> None:
+        result = await db.replication_status()
+        assert result["in_recovery"] is False
+        assert result["standbys"] == []
+        assert result["slots"] == []
 
     async def test_sequence_health(self, db: AsyncpgDatabase) -> None:
         seqs = await db.sequence_health("public")

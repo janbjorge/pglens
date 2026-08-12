@@ -17,21 +17,18 @@ from pglens.adapters.mcp_adapter import mcp
 # Tools that do not delegate to AsyncpgDatabase (e.g. registry-level tools) map to None.
 EXPECTED_TOOLS: dict[str, str | None] = {
     # schema.py
-    "list_databases": None,
     "database_info": "database_info",
     "list_schemas": "list_schemas",
     "list_tables": "list_tables",
     "list_views": "list_views",
     "list_extensions": "list_extensions",
     "describe_table": "describe_table",
-    "find_related_tables": "find_related_tables",
     "find_join_path": "find_join_path",
     "list_indexes": "list_indexes",
     "list_functions": "list_functions",
     "list_triggers": "list_triggers",
     "list_policies": "list_policies",
     # exploration.py
-    "table_row_counts": "table_row_counts",
     "sample_rows": "sample_rows",
     "column_values": "column_values",
     "column_stats": "column_stats",
@@ -42,10 +39,11 @@ EXPECTED_TOOLS: dict[str, str | None] = {
     "explain_query": "explain_query",
     "query": "query",
     # health.py
-    "table_stats": "table_stats",
+    "table_health": "table_health",
     "table_sizes": "table_sizes",
     "unused_indexes": "unused_indexes",
-    "bloat_stats": "bloat_stats",
+    "slow_queries": "slow_queries",
+    "replication_status": "replication_status",
     "active_queries": "active_queries",
     "blocking_locks": "blocking_locks",
     "sequence_health": "sequence_health",
@@ -94,11 +92,6 @@ class TestToolWiring:
             ("list_extensions", "list_extensions", {}),
             ("describe_table", "describe_table", {"table_name": "orders", "schema": "public"}),
             (
-                "find_related_tables",
-                "find_related_tables",
-                {"table_name": "orders", "schema": "public"},
-            ),
-            (
                 "find_join_path",
                 "find_join_path",
                 {
@@ -112,11 +105,6 @@ class TestToolWiring:
             ("list_functions", "list_functions", {"schema": "public"}),
             ("list_triggers", "list_triggers", {"table_name": "orders", "schema": "public"}),
             ("list_policies", "list_policies", {"table_name": "orders", "schema": "public"}),
-            (
-                "table_row_counts",
-                "table_row_counts",
-                {"table_name": "users", "schema": "public"},
-            ),
             (
                 "sample_rows",
                 "sample_rows",
@@ -141,10 +129,11 @@ class TestToolWiring:
             ("search_enum_values", "search_enum_values", {"keyword": ""}),
             ("explain_query", "explain_query", {"sql": "SELECT 1"}),
             ("query", "query", {"sql": "SELECT 1"}),
-            ("table_stats", "table_stats", {"schema": "public"}),
+            ("table_health", "table_health", {"schema": "public"}),
             ("table_sizes", "table_sizes", {"schema": "public"}),
             ("unused_indexes", "unused_indexes", {"schema": "public"}),
-            ("bloat_stats", "bloat_stats", {"schema": "public"}),
+            ("slow_queries", "slow_queries", {"limit": 20}),
+            ("replication_status", "replication_status", {}),
             ("active_queries", "active_queries", {}),
             ("blocking_locks", "blocking_locks", {}),
             ("sequence_health", "sequence_health", {"schema": "public"}),
@@ -165,10 +154,14 @@ class TestToolWiring:
         ctx = _make_ctx(mock_db)
 
         tool = mcp._tool_manager._tools[tool_name]
+        mock_registry = MagicMock()
+        mock_registry.names.return_value = ["default"]
         patches = [
             patch(f"pglens.adapters.tools.{mod}.db", return_value=mock_db)
             for mod in ("schema", "exploration", "query", "health", "safety")
         ]
+        # database_info also reads the alias registry, which is not an AsyncpgDatabase call
+        patches.append(patch("pglens.adapters.tools.schema.databases", return_value=mock_registry))
         for p in patches:
             p.start()
         try:
