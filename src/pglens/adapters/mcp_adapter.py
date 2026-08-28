@@ -190,6 +190,10 @@ Performance and health:
   retain WAL and fill disks).
 - `sequence_health` -- sequences approaching exhaustion.
 - `matview_status` -- materialized view freshness and refresh eligibility.
+- `io_stats` -- cluster-wide I/O by backend type (autovacuum vs checkpointer vs
+  client backends), PostgreSQL 16+.
+- `maintenance_progress` -- live progress of running VACUUM / ANALYZE /
+  CREATE INDEX / CLUSTER.
 
 Multi-database:
 - `database_info` returns `available_databases`, the configured aliases. Pass

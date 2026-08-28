@@ -133,10 +133,24 @@ class TestListIndexes:
         assert "indisvalid" in pool.fetch.call_args[0][0]
 
 
+class TestServerVersion:
+    async def test_injected_version_skips_probe(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
+        assert await db._get_server_version_num() == 180000
+        pool.fetchval.assert_not_called()
+
+    async def test_version_is_cached_after_first_probe(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool)
+        pool.fetchval.return_value = 160000
+        pool.fetch.return_value = []
+        await db.table_health("public")
+        await db.table_health("public")
+        assert pool.fetchval.call_count == 1
+
+
 class TestTableHealth:
-    async def test_returns_merged_stats_and_bloat_columns(
-        self, db: AsyncpgDatabase, pool: AsyncMock
-    ) -> None:
+    async def test_returns_merged_stats_and_bloat_columns(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=160000)
         pool.fetch.return_value = [
             make_record(
                 table_name="users",
@@ -159,7 +173,8 @@ class TestTableHealth:
         assert result[0]["xid_age"] == 12345
         assert result[0]["wraparound_pct"] == 6.2
 
-    async def test_joins_pg_class_by_relid(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+    async def test_joins_pg_class_by_relid(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=160000)
         pool.fetch.return_value = []
         await db.table_health("public")
         sql = pool.fetch.call_args[0][0]
@@ -167,6 +182,22 @@ class TestTableHealth:
         # so same-named tables in other schemas cannot collide
         assert "relfrozenxid" in sql
         assert "c.oid = s.relid" in sql
+
+    async def test_pg18_adds_maintenance_timing_columns(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
+        pool.fetch.return_value = []
+        await db.table_health("public")
+        sql = pool.fetch.call_args[0][0]
+        assert "total_vacuum_time" in sql
+        assert "relallfrozen" in sql
+
+    async def test_pre_pg18_omits_maintenance_timing_columns(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=160000)
+        pool.fetch.return_value = []
+        await db.table_health("public")
+        sql = pool.fetch.call_args[0][0]
+        assert "total_vacuum_time" not in sql
+        assert "relallfrozen" not in sql
 
 
 class TestSlowQueries:
@@ -208,20 +239,152 @@ class TestSlowQueries:
         await db.slow_queries(0)
         assert pool.fetch.call_args[0][1] == 1
 
+    async def test_pg18_extension_schema_adds_columns(
+        self, db: AsyncpgDatabase, pool: AsyncMock
+    ) -> None:
+        # First fetchval: extension installed; second: wal_buffers_full column exists.
+        pool.fetchval.side_effect = [True, True]
+        pool.fetch.return_value = []
+        await db.slow_queries(20)
+        sql = pool.fetch.call_args[0][0]
+        assert "wal_buffers_full" in sql
+        assert "parallel_workers_launched" in sql
+
+    async def test_old_extension_schema_omits_columns(
+        self, db: AsyncpgDatabase, pool: AsyncMock
+    ) -> None:
+        pool.fetchval.side_effect = [True, False]
+        pool.fetch.return_value = []
+        await db.slow_queries(20)
+        sql = pool.fetch.call_args[0][0]
+        assert "wal_buffers_full" not in sql
+        assert "parallel_workers_launched" not in sql
+
 
 class TestReplicationStatus:
-    async def test_shape(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+    async def test_shape(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
         pool.fetchval.return_value = False
         pool.fetch.side_effect = [
             [make_record(application_name="standby1", state="streaming")],
             [make_record(slot_name="slot1", active=False, retained_wal_bytes=1024)],
+            [make_record(subname="sub1", apply_error_count=0, confl_update_missing=2)],
         ]
         result = await db.replication_status()
         assert result["in_recovery"] is False
         standbys = result["standbys"]
         slots = result["slots"]
+        subscriptions = result["subscriptions"]
         assert isinstance(standbys, list) and standbys[0]["state"] == "streaming"
         assert isinstance(slots, list) and slots[0]["active"] is False
+        assert isinstance(subscriptions, list)
+        assert subscriptions[0]["confl_update_missing"] == 2
+        subscription_sql = pool.fetch.call_args_list[2][0][0]
+        assert "confl_insert_exists" in subscription_sql
+
+    async def test_pre_pg15_skips_subscription_stats(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=140000)
+        pool.fetchval.return_value = False
+        pool.fetch.side_effect = [[], []]
+        result = await db.replication_status()
+        assert result["subscriptions"] == []
+        assert pool.fetch.call_count == 2
+
+    async def test_pre_pg18_omits_conflict_columns(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=170000)
+        pool.fetchval.return_value = False
+        pool.fetch.side_effect = [[], [], []]
+        await db.replication_status()
+        subscription_sql = pool.fetch.call_args_list[2][0][0]
+        assert "pg_stat_subscription_stats" in subscription_sql
+        assert "confl_" not in subscription_sql
+
+
+class TestIoStats:
+    async def test_pre_pg16_returns_error_entry(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=150000)
+        result = await db.io_stats()
+        assert len(result) == 1
+        assert "pg_stat_io" in str(result[0]["error"])
+        pool.fetch.assert_not_called()
+
+    async def test_pg16_omits_byte_columns(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=160000)
+        pool.fetch.return_value = []
+        await db.io_stats()
+        sql = pool.fetch.call_args[0][0]
+        assert "pg_stat_io" in sql
+        assert "read_bytes" not in sql
+
+    async def test_pg18_adds_byte_columns(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
+        pool.fetch.return_value = [
+            make_record(
+                backend_type="client backend",
+                object="relation",
+                context="normal",
+                reads=100,
+                read_bytes=819200,
+                hits=5000,
+            ),
+        ]
+        result = await db.io_stats()
+        sql = pool.fetch.call_args[0][0]
+        assert "read_bytes" in sql
+        assert "write_bytes" in sql
+        assert "extend_bytes" in sql
+        assert result[0]["hits"] == 5000
+
+
+class TestMaintenanceProgress:
+    async def test_shape(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
+        pool.fetch.side_effect = [
+            [make_record(pid=1, phase="scanning heap", scanned_pct=42.0)],
+            [],
+            [],
+            [],
+        ]
+        result = await db.maintenance_progress()
+        assert set(result.keys()) == {"vacuum", "analyze", "create_index", "cluster"}
+        vacuum = result["vacuum"]
+        assert isinstance(vacuum, list) and vacuum[0]["scanned_pct"] == 42.0
+        assert result["cluster"] == []
+
+    async def test_pg18_includes_delay_time(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
+        pool.fetch.side_effect = [[], [], [], []]
+        await db.maintenance_progress()
+        vacuum_sql = pool.fetch.call_args_list[0][0][0]
+        analyze_sql = pool.fetch.call_args_list[1][0][0]
+        assert "delay_time" in vacuum_sql
+        assert "indexes_total" in vacuum_sql
+        assert "delay_time" in analyze_sql
+
+    async def test_pg16_omits_gated_columns(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=160000)
+        pool.fetch.side_effect = [[], [], [], []]
+        await db.maintenance_progress()
+        vacuum_sql = pool.fetch.call_args_list[0][0][0]
+        analyze_sql = pool.fetch.call_args_list[1][0][0]
+        assert "delay_time" not in vacuum_sql
+        assert "indexes_total" not in vacuum_sql
+        assert "delay_time" not in analyze_sql
+
+    async def test_pg17_has_index_progress_but_no_delay(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=170000)
+        pool.fetch.side_effect = [[], [], [], []]
+        await db.maintenance_progress()
+        vacuum_sql = pool.fetch.call_args_list[0][0][0]
+        assert "indexes_total" in vacuum_sql
+        assert "delay_time" not in vacuum_sql
+
+    async def test_joins_pg_class_by_relid(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
+        pool.fetch.side_effect = [[], [], [], []]
+        await db.maintenance_progress()
+        for call in pool.fetch.call_args_list:
+            assert "c.oid = p.relid" in call[0][0]
 
 
 class TestListMethods:
@@ -431,7 +594,8 @@ class TestQueryAndExplain:
 
         sql_arg = conn.fetch.call_args[0][0]
         assert "ANALYZE False" in sql_arg
-        assert "BUFFERS False" in sql_arg
+        # BUFFERS is omitted so the server default applies (on with ANALYZE since PG18).
+        assert "BUFFERS" not in sql_arg
 
     async def test_explain_with_analyze(self) -> None:
         conn = mock_conn(fetch_return=[make_record(**{"QUERY PLAN": "Seq Scan"})])
@@ -442,7 +606,7 @@ class TestQueryAndExplain:
 
         sql_arg = conn.fetch.call_args[0][0]
         assert "ANALYZE True" in sql_arg
-        assert "BUFFERS False" in sql_arg
+        assert "BUFFERS" not in sql_arg
 
     async def test_explain_with_analyze_and_buffers(self) -> None:
         conn = mock_conn(fetch_return=[make_record(**{"QUERY PLAN": "Seq Scan"})])
@@ -453,7 +617,7 @@ class TestQueryAndExplain:
 
         sql_arg = conn.fetch.call_args[0][0]
         assert "ANALYZE True" in sql_arg
-        assert "BUFFERS True" in sql_arg
+        assert "BUFFERS TRUE" in sql_arg
 
 
 class TestValidateSelect:

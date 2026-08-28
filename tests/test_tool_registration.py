@@ -48,6 +48,8 @@ EXPECTED_TOOLS: dict[str, str | None] = {
     "blocking_locks": "blocking_locks",
     "sequence_health": "sequence_health",
     "matview_status": "matview_status",
+    "io_stats": "io_stats",
+    "maintenance_progress": "maintenance_progress",
     # safety.py
     "object_dependencies": "object_dependencies",
 }
@@ -138,6 +140,8 @@ class TestToolWiring:
             ("blocking_locks", "blocking_locks", {}),
             ("sequence_health", "sequence_health", {"schema": "public"}),
             ("matview_status", "matview_status", {"schema": "public"}),
+            ("io_stats", "io_stats", {}),
+            ("maintenance_progress", "maintenance_progress", {}),
             (
                 "object_dependencies",
                 "object_dependencies",

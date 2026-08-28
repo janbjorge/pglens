@@ -79,7 +79,9 @@ Analyze = Annotated[
 
 Buffers = Annotated[
     bool,
-    "When true (requires analyze=True), show buffer usage and cache hit statistics. Default false.",
+    "When true (requires analyze=True), show buffer usage and cache hit statistics. "
+    "When false, the server default applies: PostgreSQL 18+ includes buffers automatically "
+    "with analyze; older versions omit them. Default false.",
 ]
 
 Limit = Annotated[int, "Maximum number of rows to return (1-500, default 500)"]
