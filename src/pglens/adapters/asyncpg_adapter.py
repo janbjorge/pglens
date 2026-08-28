@@ -31,6 +31,16 @@ def object_type_to_relkind(object_type: str) -> str:
 @dataclass
 class AsyncpgDatabase:
     pool: asyncpg.Pool
+    # Cached numeric server version (e.g. 180001). None until first use; injectable in tests.
+    server_version_num: int | None = None
+
+    async def _get_server_version_num(self) -> int:
+        if self.server_version_num is None:
+            self.server_version_num = cast(
+                int,
+                await self.pool.fetchval("SELECT current_setting('server_version_num')::int"),
+            )
+        return self.server_version_num
 
     def safe_table_ref(self, schema: str, table_name: str) -> str:
         return f"{quote_ident(schema)}.{quote_ident(table_name)}"
@@ -481,10 +491,25 @@ class AsyncpgDatabase:
         ]
 
     async def table_health(self, schema: str) -> list[dict[str, object]]:
+        # PG18: cumulative maintenance timings on pg_stat_all_tables, relallfrozen on pg_class.
+        pg18_columns = (
+            """
+                    round(s.total_vacuum_time::numeric, 1) AS total_vacuum_time_ms,
+                    round(s.total_autovacuum_time::numeric, 1) AS total_autovacuum_time_ms,
+                    round(s.total_analyze_time::numeric, 1) AS total_analyze_time_ms,
+                    round(s.total_autoanalyze_time::numeric, 1) AS total_autoanalyze_time_ms,
+                    c.relallfrozen,
+                    CASE WHEN c.relpages > 0
+                        THEN round(100.0 * c.relallfrozen / c.relpages, 1)
+                    END AS frozen_pct,
+            """
+            if await self._get_server_version_num() >= 180000
+            else ""
+        )
         return [
             dict(r)
             for r in await self.pool.fetch(
-                """
+                f"""
                 SELECT
                     s.relname AS table_name,
                     s.seq_scan,
@@ -502,6 +527,7 @@ class AsyncpgDatabase:
                         100.0 * age(c.relfrozenxid)
                         / current_setting('autovacuum_freeze_max_age')::bigint, 1
                     ) AS wraparound_pct,
+                    {pg18_columns}
                     s.last_vacuum,
                     s.last_autovacuum,
                     s.last_analyze,
@@ -522,7 +548,12 @@ class AsyncpgDatabase:
         buffers: bool = False,
     ) -> str:
         normalized = validate_select(sql, allow_cursor=True)
-        options = f"ANALYZE {analyze}, BUFFERS {buffers}, FORMAT TEXT"
+        # Omit BUFFERS when false so the server default applies (on with ANALYZE since PG18).
+        options = (
+            f"ANALYZE {analyze}, BUFFERS TRUE, FORMAT TEXT"
+            if buffers
+            else f"ANALYZE {analyze}, FORMAT TEXT"
+        )
         async with self.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 rows = await conn.fetch(f"EXPLAIN ({options}) {normalized}")
@@ -830,10 +861,30 @@ class AsyncpgDatabase:
                     "and a server restart)."
                 }
             ]
+        # Gate on column existence, not server version: a pg_upgraded cluster can run
+        # an older pg_stat_statements schema on a newer server.
+        has_pg18_columns = await self.pool.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_attribute
+                WHERE attrelid = to_regclass('pg_stat_statements')
+                  AND attname = 'wal_buffers_full'
+            )
+            """
+        )
+        pg18_columns = (
+            """
+                    s.parallel_workers_to_launch,
+                    s.parallel_workers_launched,
+                    s.wal_buffers_full,
+            """
+            if has_pg18_columns
+            else ""
+        )
         return [
             dict(r)
             for r in await self.pool.fetch(
-                """
+                f"""
                 SELECT
                     r.rolname AS username,
                     d.datname AS database,
@@ -846,6 +897,7 @@ class AsyncpgDatabase:
                         100.0 * s.shared_blks_hit
                         / nullif(s.shared_blks_hit + s.shared_blks_read, 0), 1
                     ) AS cache_hit_pct,
+                    {pg18_columns}
                     s.query
                 FROM pg_stat_statements s
                 JOIN pg_roles r ON r.oid = s.userid
@@ -904,10 +956,234 @@ class AsyncpgDatabase:
             )
         ]
 
+        version = await self._get_server_version_num()
+        if version < 150000:
+            subscriptions: list[dict[str, object]] = []
+        else:
+            # PG18: per-type logical replication conflict counters.
+            conflict_columns = (
+                """
+                    confl_insert_exists,
+                    confl_update_origin_differs,
+                    confl_update_exists,
+                    confl_update_missing,
+                    confl_delete_origin_differs,
+                    confl_delete_missing,
+                    confl_multiple_unique_conflicts,
+                """
+                if version >= 180000
+                else ""
+            )
+            subscriptions = [
+                dict(r)
+                for r in await self.pool.fetch(
+                    f"""
+                    SELECT
+                        subname,
+                        apply_error_count,
+                        sync_error_count,
+                        {conflict_columns}
+                        stats_reset
+                    FROM pg_stat_subscription_stats
+                    ORDER BY subname
+                    """
+                )
+            ]
+
         return {
             "in_recovery": in_recovery,
             "standbys": standbys,
             "slots": slots,
+            "subscriptions": subscriptions,
+        }
+
+    async def io_stats(self) -> list[dict[str, object]]:
+        version = await self._get_server_version_num()
+        if version < 160000:
+            return [
+                {
+                    "error": "pg_stat_io requires PostgreSQL 16 or newer "
+                    f"(connected server is {version // 10000})."
+                }
+            ]
+        # PG18: byte counters alongside the operation counts.
+        pg18_columns = (
+            """
+                    read_bytes,
+                    write_bytes,
+                    extend_bytes,
+            """
+            if version >= 180000
+            else ""
+        )
+        return [
+            dict(r)
+            for r in await self.pool.fetch(
+                f"""
+                SELECT
+                    backend_type,
+                    object,
+                    context,
+                    reads,
+                    round(read_time::numeric, 1) AS read_time_ms,
+                    writes,
+                    round(write_time::numeric, 1) AS write_time_ms,
+                    writebacks,
+                    round(writeback_time::numeric, 1) AS writeback_time_ms,
+                    extends,
+                    round(extend_time::numeric, 1) AS extend_time_ms,
+                    {pg18_columns}
+                    hits,
+                    evictions,
+                    reuses,
+                    fsyncs,
+                    round(fsync_time::numeric, 1) AS fsync_time_ms,
+                    stats_reset
+                FROM pg_stat_io
+                WHERE coalesce(reads, 0) <> 0 OR coalesce(writes, 0) <> 0
+                   OR coalesce(extends, 0) <> 0 OR coalesce(hits, 0) <> 0
+                   OR coalesce(evictions, 0) <> 0 OR coalesce(reuses, 0) <> 0
+                   OR coalesce(fsyncs, 0) <> 0 OR coalesce(writebacks, 0) <> 0
+                ORDER BY backend_type, object, context
+                """
+            )
+        ]
+
+    async def maintenance_progress(self) -> dict[str, object]:
+        version = await self._get_server_version_num()
+        pg17_vacuum_columns = (
+            """
+                p.indexes_total,
+                p.indexes_processed,
+            """
+            if version >= 170000
+            else ""
+        )
+        # PG18: cumulative cost-based delay sleep (needs track_cost_delay_timing).
+        delay_column = (
+            """
+                round(p.delay_time::numeric, 1) AS delay_time_ms,
+            """
+            if version >= 180000
+            else ""
+        )
+
+        vacuum = [
+            dict(r)
+            for r in await self.pool.fetch(
+                f"""
+                SELECT
+                    p.pid,
+                    n.nspname AS schema,
+                    c.relname AS table_name,
+                    p.phase,
+                    p.heap_blks_total,
+                    p.heap_blks_scanned,
+                    CASE WHEN p.heap_blks_total > 0
+                        THEN round(100.0 * p.heap_blks_scanned / p.heap_blks_total, 1)
+                    END AS scanned_pct,
+                    p.heap_blks_vacuumed,
+                    {pg17_vacuum_columns}
+                    {delay_column}
+                    p.index_vacuum_count
+                FROM pg_stat_progress_vacuum p
+                LEFT JOIN pg_class c ON c.oid = p.relid
+                LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+                ORDER BY p.pid
+                """
+            )
+        ]
+
+        analyze = [
+            dict(r)
+            for r in await self.pool.fetch(
+                f"""
+                SELECT
+                    p.pid,
+                    n.nspname AS schema,
+                    c.relname AS table_name,
+                    p.phase,
+                    p.sample_blks_total,
+                    p.sample_blks_scanned,
+                    CASE WHEN p.sample_blks_total > 0
+                        THEN round(100.0 * p.sample_blks_scanned / p.sample_blks_total, 1)
+                    END AS scanned_pct,
+                    p.ext_stats_total,
+                    p.ext_stats_computed,
+                    {delay_column}
+                    p.child_tables_total,
+                    p.child_tables_done
+                FROM pg_stat_progress_analyze p
+                LEFT JOIN pg_class c ON c.oid = p.relid
+                LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+                ORDER BY p.pid
+                """
+            )
+        ]
+
+        create_index = [
+            dict(r)
+            for r in await self.pool.fetch(
+                """
+                SELECT
+                    p.pid,
+                    n.nspname AS schema,
+                    c.relname AS table_name,
+                    ci.relname AS index_name,
+                    p.command,
+                    p.phase,
+                    p.lockers_total,
+                    p.lockers_done,
+                    p.current_locker_pid,
+                    p.blocks_total,
+                    p.blocks_done,
+                    CASE WHEN p.blocks_total > 0
+                        THEN round(100.0 * p.blocks_done / p.blocks_total, 1)
+                    END AS blocks_pct,
+                    p.tuples_total,
+                    p.tuples_done,
+                    p.partitions_total,
+                    p.partitions_done
+                FROM pg_stat_progress_create_index p
+                LEFT JOIN pg_class c ON c.oid = p.relid
+                LEFT JOIN pg_class ci ON ci.oid = p.index_relid
+                LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+                ORDER BY p.pid
+                """
+            )
+        ]
+
+        cluster = [
+            dict(r)
+            for r in await self.pool.fetch(
+                """
+                SELECT
+                    p.pid,
+                    n.nspname AS schema,
+                    c.relname AS table_name,
+                    p.command,
+                    p.phase,
+                    p.heap_blks_total,
+                    p.heap_blks_scanned,
+                    CASE WHEN p.heap_blks_total > 0
+                        THEN round(100.0 * p.heap_blks_scanned / p.heap_blks_total, 1)
+                    END AS scanned_pct,
+                    p.heap_tuples_scanned,
+                    p.heap_tuples_written,
+                    p.index_rebuild_count
+                FROM pg_stat_progress_cluster p
+                LEFT JOIN pg_class c ON c.oid = p.relid
+                LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+                ORDER BY p.pid
+                """
+            )
+        ]
+
+        return {
+            "vacuum": vacuum,
+            "analyze": analyze,
+            "create_index": create_index,
+            "cluster": cluster,
         }
 
     # -- Size & bloat analysis --

@@ -1,6 +1,6 @@
 # pglens
 
-Read-only PostgreSQL introspection for AI agents. 29 MCP tools for schema discovery, data exploration, query execution, and health monitoring. Pure `pg_catalog`, no extensions required.
+Read-only PostgreSQL introspection for AI agents. 31 MCP tools for schema discovery, data exploration, query execution, and health monitoring. Pure `pg_catalog`, no extensions required.
 
 ## Why pglens
 
@@ -63,17 +63,19 @@ pglens opens read-only connections (`default_transaction_read_only=on`), quotes 
 
 | Tool | What it does |
 |---|---|
-| `slow_queries` | Top statements by total execution time (needs `pg_stat_statements`) |
-| `table_health` | Index hit rates, dead tuples, vacuum timestamps, wraparound risk |
+| `slow_queries` | Top statements by total execution time (needs `pg_stat_statements`; parallel-worker and WAL-buffer stats on PostgreSQL 18) |
+| `table_health` | Index hit rates, dead tuples, vacuum timestamps, wraparound risk (cumulative vacuum/analyze time and frozen-page fraction on PostgreSQL 18+) |
 | `table_sizes` | Disk usage per table, ranked by size |
 | `unused_indexes` | Indexes that are never scanned, including invalid ones |
 | `active_queries` | Currently running sessions and their queries |
 | `blocking_locks` | Lock wait chains (who blocks whom) |
-| `replication_status` | Standby lag and replication slots (inactive slots retain WAL) |
+| `replication_status` | Standby lag, replication slots (inactive slots retain WAL), and subscription error/conflict counts |
 | `sequence_health` | Sequences approaching exhaustion |
 | `matview_status` | Materialized view freshness and refresh eligibility |
+| `io_stats` | Cluster-wide I/O from `pg_stat_io` by backend type, object, and context (PostgreSQL 16+; byte counts and WAL rows on 18+) |
+| `maintenance_progress` | Live progress of running VACUUM, ANALYZE, CREATE INDEX, and CLUSTER operations |
 
-All tools work on a stock PostgreSQL with no extensions. The one exception is `slow_queries`, which reads `pg_stat_statements` when it is installed and returns install instructions when it is not.
+All tools work on a stock PostgreSQL with no extensions. `slow_queries` reads `pg_stat_statements` when it is installed and returns install instructions when it is not. Tools adapt to the server version: version-dependent columns (PostgreSQL 18's I/O byte counts, vacuum timing totals, and subscription conflict counts) appear when the server supports them, and older servers get the base column set. `io_stats` requires PostgreSQL 16+.
 
 ### Safety before DDL
 

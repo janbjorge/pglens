@@ -118,7 +118,7 @@ ANALYZE;
 
 @pytest_asyncio.fixture(scope="session")
 async def pool() -> AsyncGenerator[asyncpg.Pool, None]:
-    container = PostgresContainer("postgres:16", driver=None)
+    container = PostgresContainer("postgres:18", driver=None)
     container.start()
     pool = await asyncpg.create_pool(dsn=container.get_connection_url(), min_size=1, max_size=5)
     assert pool is not None

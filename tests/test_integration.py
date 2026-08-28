@@ -375,6 +375,9 @@ class TestHealthMonitoring:
         assert users_stats["n_live_tup"] is not None
         assert users_stats["xid_age"] is not None
         assert users_stats["wraparound_pct"] is not None
+        # PG18 container: maintenance timing and freeze columns must be present
+        assert "total_vacuum_time_ms" in users_stats
+        assert "relallfrozen" in users_stats
 
     async def test_table_sizes(self, db: AsyncpgDatabase) -> None:
         sizes = await db.table_sizes("public")
@@ -404,6 +407,23 @@ class TestHealthMonitoring:
         assert result["in_recovery"] is False
         assert result["standbys"] == []
         assert result["slots"] == []
+        assert result["subscriptions"] == []
+
+    async def test_io_stats(self, db: AsyncpgDatabase) -> None:
+        rows = await db.io_stats()
+        assert len(rows) >= 1
+        first = rows[0]
+        assert "backend_type" in first
+        assert "object" in first
+        assert "context" in first
+        # PG18 container: byte counters must be present
+        assert "read_bytes" in first
+
+    async def test_maintenance_progress(self, db: AsyncpgDatabase) -> None:
+        result = await db.maintenance_progress()
+        assert set(result.keys()) == {"vacuum", "analyze", "create_index", "cluster"}
+        for entries in result.values():
+            assert isinstance(entries, list)
 
     async def test_sequence_health(self, db: AsyncpgDatabase) -> None:
         seqs = await db.sequence_health("public")
