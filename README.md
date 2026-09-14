@@ -148,6 +148,8 @@ pglens reads standard PostgreSQL environment variables (libpq). Connection strin
 
 pglens reads no connection-string env vars. Configuration goes through libpq env vars only.
 
+The `PGLENS_*` timeouts are parsed and validated by [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/), so a non-integer or negative value fails at startup with a `ValidationError` naming the field, rather than silently falling back to a default.
+
 To run pglens directly from a shell (e.g. for testing):
 
 ```bash

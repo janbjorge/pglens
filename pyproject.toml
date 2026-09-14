@@ -14,6 +14,7 @@ dependencies = [
     # Upper bound: guard against the next API break landing silently.
     "mcp>=2,<3",
     "pglast>=7.13",
+    "pydantic-settings>=2",
 ]
 
 [project.scripts]
