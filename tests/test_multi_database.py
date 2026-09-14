@@ -11,6 +11,9 @@ from pglens.adapters.mcp_adapter import (
     DEFAULT_DB,
     Databases,
     _collect_databases,
+    _command_timeout_seconds,
+    _idle_in_transaction_timeout_ms,
+    _lock_timeout_ms,
     _server_settings,
     _statement_timeout_ms,
     db,
@@ -126,11 +129,76 @@ class TestStatementTimeout:
             _statement_timeout_ms()
 
     def test_server_settings_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
         monkeypatch.setenv("PGLENS_STATEMENT_TIMEOUT", "30")
         settings = _server_settings()
         assert settings["application_name"] == "pglens"
         assert settings["default_transaction_read_only"] == "on"
         assert settings["statement_timeout"] == "30000"
+        assert settings["lock_timeout"] == "5000"
+        assert settings["idle_in_transaction_session_timeout"] == "30000"
+
+
+class TestLockTimeout:
+    def test_default_is_5_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PGLENS_LOCK_TIMEOUT", raising=False)
+        assert _lock_timeout_ms() == 5_000
+
+    def test_env_override_in_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_LOCK_TIMEOUT", "2")
+        assert _lock_timeout_ms() == 2_000
+
+    def test_zero_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_LOCK_TIMEOUT", "0")
+        assert _lock_timeout_ms() == 0
+
+    def test_rejects_non_integer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_LOCK_TIMEOUT", "2s")
+        with pytest.raises(ValueError, match="PGLENS_LOCK_TIMEOUT must be an integer"):
+            _lock_timeout_ms()
+
+    def test_rejects_negative(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_LOCK_TIMEOUT", "-1")
+        with pytest.raises(ValueError, match=">= 0"):
+            _lock_timeout_ms()
+
+
+class TestIdleInTransactionTimeout:
+    def test_default_is_30_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PGLENS_IDLE_TX_TIMEOUT", raising=False)
+        assert _idle_in_transaction_timeout_ms() == 30_000
+
+    def test_env_override_in_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_IDLE_TX_TIMEOUT", "10")
+        assert _idle_in_transaction_timeout_ms() == 10_000
+
+    def test_zero_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_IDLE_TX_TIMEOUT", "0")
+        assert _idle_in_transaction_timeout_ms() == 0
+
+    def test_rejects_non_integer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_IDLE_TX_TIMEOUT", "30s")
+        with pytest.raises(ValueError, match="PGLENS_IDLE_TX_TIMEOUT must be an integer"):
+            _idle_in_transaction_timeout_ms()
+
+    def test_rejects_negative(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PGLENS_IDLE_TX_TIMEOUT", "-5")
+        with pytest.raises(ValueError, match=">= 0"):
+            _idle_in_transaction_timeout_ms()
+
+
+class TestCommandTimeout:
+    def test_sits_above_statement_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Grace margin lets the server-side cancel win, so callers see a
+        # Postgres error rather than an asyncpg TimeoutError.
+        monkeypatch.setenv("PGLENS_STATEMENT_TIMEOUT", "30")
+        assert _command_timeout_seconds() == 35.0
+
+    def test_disabled_when_statement_timeout_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PGLENS_STATEMENT_TIMEOUT", "0")
+        assert _command_timeout_seconds() is None
 
 
 class TestDbHelper:

@@ -143,6 +143,8 @@ pglens reads standard PostgreSQL environment variables (libpq). Connection strin
 | `PGSERVICE`, `PGPASSFILE`, `PGAPPNAME`, … | no | Other libpq env vars, honored by asyncpg automatically |
 | `PGLENS_DATABASES` | no | Comma-separated extra dbnames on the same host (see [Multiple databases](#multiple-databases)) |
 | `PGLENS_STATEMENT_TIMEOUT` | no (default 60) | Per-statement timeout in seconds; `0` disables it |
+| `PGLENS_LOCK_TIMEOUT` | no (default 5) | How long a statement waits for a lock, in seconds; `0` disables it |
+| `PGLENS_IDLE_TX_TIMEOUT` | no (default 30) | Kills sessions idle inside an open transaction, in seconds; `0` disables it |
 
 pglens reads no connection-string env vars. Configuration goes through libpq env vars only.
 
@@ -273,6 +275,9 @@ uvx pglens --transport streamable-http
 - pglens parses SQL for `query` and `explain_query` with PostgreSQL's own parser (via pglast) and accepts only a single SELECT statement. It rejects `SELECT INTO`, data-modifying CTEs like `WITH x AS (DELETE ...)`, and multi-statement input before anything reaches the database.
 - The same validation rejects parameter placeholders (`$1`, `$2`). Inline literal values instead.
 - A statement timeout (`PGLENS_STATEMENT_TIMEOUT`, default 60 s) bounds every query, so a runaway `COUNT(*)` or `EXPLAIN ANALYZE` cannot hog the server.
+- A lock timeout (`PGLENS_LOCK_TIMEOUT`, default 5 s) keeps pglens out of lock queues. Even a plain SELECT takes `ACCESS SHARE`, so without it pglens could sit behind a pending `ALTER TABLE` for the full statement timeout.
+- An idle-in-transaction timeout (`PGLENS_IDLE_TX_TIMEOUT`, default 30 s) covers what the statement timeout cannot: a stalled or disconnected client between `BEGIN` and `COMMIT`. Such a session keeps `ACCESS SHARE` on every table it touched — blocking any queued `ALTER`/`DROP`/`REINDEX`, and everything waiting behind it — and pins the `xmin` horizon so autovacuum cannot reclaim dead tuples anywhere in the cluster.
+- The asyncpg pool carries a client-side command timeout 5 s above the statement timeout, so a blackholed connection (dropped NAT entry, unreachable host) fails instead of leaking a pool slot forever.
 - pglens always quotes table and column identifiers; internal values go through bind parameters.
 - Connections set `application_name = 'pglens'`, which makes them easy to spot in `pg_stat_activity`.
 - pglens exposes no DDL tools.

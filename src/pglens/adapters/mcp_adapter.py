@@ -72,23 +72,67 @@ def _collect_databases() -> tuple[list[str], str]:
     return [DEFAULT_DB], DEFAULT_DB
 
 
-def _statement_timeout_ms() -> int:
-    """Statement timeout from PGLENS_STATEMENT_TIMEOUT (seconds).
+def _timeout_seconds(env_var: str, default: int) -> int:
+    """Read a timeout in whole seconds from the environment.
 
-    Defaults to 60 seconds; 0 disables the timeout.
+    An unset or empty value yields ``default``; ``0`` disables the timeout,
+    matching Postgres semantics for the corresponding GUCs.
     """
-    raw = os.environ.get("PGLENS_STATEMENT_TIMEOUT", "").strip()
+    raw = os.environ.get(env_var, "").strip()
     if not raw:
-        return 60_000
+        return default
     try:
         seconds = int(raw)
     except ValueError:
-        raise ValueError(
-            f"PGLENS_STATEMENT_TIMEOUT must be an integer number of seconds, got {raw!r}"
-        ) from None
+        raise ValueError(f"{env_var} must be an integer number of seconds, got {raw!r}") from None
     if seconds < 0:
-        raise ValueError(f"PGLENS_STATEMENT_TIMEOUT must be >= 0, got {seconds}")
-    return seconds * 1000
+        raise ValueError(f"{env_var} must be >= 0, got {seconds}")
+    return seconds
+
+
+def _statement_timeout_ms() -> int:
+    """Statement timeout from PGLENS_STATEMENT_TIMEOUT (seconds).
+
+    Defaults to 60 seconds; 0 disables the timeout. Bounds how long any single
+    query may run, including ``EXPLAIN ANALYZE`` and an unqualified ``count(*)``.
+    """
+    return _timeout_seconds("PGLENS_STATEMENT_TIMEOUT", 60) * 1000
+
+
+def _lock_timeout_ms() -> int:
+    """Lock wait timeout from PGLENS_LOCK_TIMEOUT (seconds).
+
+    Defaults to 5 seconds; 0 disables the timeout. Even a pure SELECT takes
+    ACCESS SHARE, so without this pglens can sit in a lock queue for the whole
+    statement timeout instead of failing fast and getting out of the way.
+    """
+    return _timeout_seconds("PGLENS_LOCK_TIMEOUT", 5) * 1000
+
+
+def _idle_in_transaction_timeout_ms() -> int:
+    """Idle-in-transaction timeout from PGLENS_IDLE_TX_TIMEOUT (seconds).
+
+    Defaults to 30 seconds; 0 disables the timeout. statement_timeout does not
+    cover a session that is idle *inside* an open transaction: a stalled client
+    would keep holding ACCESS SHARE on every table it touched (blocking any
+    pending ALTER/DROP/REINDEX, and everything queued behind it) and would pin
+    the xmin horizon so autovacuum cannot reclaim dead tuples.
+    """
+    return _timeout_seconds("PGLENS_IDLE_TX_TIMEOUT", 30) * 1000
+
+
+def _command_timeout_seconds() -> float | None:
+    """Client-side deadline for a single asyncpg command, or None if disabled.
+
+    Server-side statement_timeout cannot fire if the connection is blackholed
+    (dropped NAT entry, unreachable host), which would leak a pool slot for
+    good. Sits a few seconds above statement_timeout so the server normally
+    wins the race and returns a proper Postgres error instead.
+    """
+    statement_timeout_ms = _statement_timeout_ms()
+    if statement_timeout_ms == 0:
+        return None
+    return statement_timeout_ms / 1000 + 5
 
 
 def _server_settings() -> dict[str, str]:
@@ -99,6 +143,8 @@ def _server_settings() -> dict[str, str]:
         "default_transaction_read_only": "on",
         # 0 means disabled, matching Postgres semantics.
         "statement_timeout": str(_statement_timeout_ms()),
+        "lock_timeout": str(_lock_timeout_ms()),
+        "idle_in_transaction_session_timeout": str(_idle_in_transaction_timeout_ms()),
     }
 
 
@@ -106,6 +152,7 @@ def _server_settings() -> dict[str, str]:
 async def app_lifespan(_server: MCPServer[Databases]) -> AsyncIterator[Databases]:
     names, default_alias = _collect_databases()
     server_settings = _server_settings()
+    command_timeout = _command_timeout_seconds()
     async with AsyncExitStack() as stack:
         databases: dict[str, AsyncpgDatabase] = {}
         for name in names:
@@ -118,6 +165,7 @@ async def app_lifespan(_server: MCPServer[Databases]) -> AsyncIterator[Databases
                     min_size=1,
                     max_size=5,
                     server_settings=server_settings,
+                    command_timeout=command_timeout,
                 )
             )
             databases[name] = AsyncpgDatabase(pool)
