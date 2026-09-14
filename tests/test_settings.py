@@ -8,12 +8,12 @@ from collections.abc import Callable
 import pytest
 from pydantic import ValidationError
 
-from pglens.core.settings import Settings
+from pglens.core.settings import DEFAULT_DB, DatabaseAliases, Settings
 
 
 def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in list(os.environ):
-        if key.startswith("PGLENS_"):
+        if key.startswith("PGLENS_") or key == "PGDATABASE":
             monkeypatch.delenv(key, raising=False)
 
 
@@ -72,10 +72,10 @@ class TestEnvParsing:
             Settings()
 
 
-class TestServerSettings:
-    def test_shape_and_millisecond_conversion(self) -> None:
+class TestPoolOptions:
+    def test_server_settings_shape_and_millisecond_conversion(self) -> None:
         settings = Settings(statement_timeout=30, lock_timeout=2, idle_tx_timeout=10)
-        assert settings.server_settings() == {
+        assert settings.pool_options.server_settings == {
             "application_name": "pglens",
             "default_transaction_read_only": "on",
             "statement_timeout": "30000",
@@ -83,12 +83,57 @@ class TestServerSettings:
             "idle_in_transaction_session_timeout": "10000",
         }
 
-
-class TestCommandTimeout:
-    def test_sits_above_statement_timeout(self) -> None:
+    def test_command_timeout_sits_above_statement_timeout(self) -> None:
         # Grace margin lets the server-side cancel win, so callers see a
         # Postgres error rather than an asyncpg TimeoutError.
-        assert Settings(statement_timeout=30).command_timeout == 35.0
+        assert Settings(statement_timeout=30).pool_options.command_timeout == 35.0
 
-    def test_disabled_when_statement_timeout_disabled(self) -> None:
-        assert Settings(statement_timeout=0).command_timeout is None
+    def test_command_timeout_disabled_when_statement_timeout_disabled(self) -> None:
+        assert Settings(statement_timeout=0).pool_options.command_timeout is None
+
+
+class TestDatabaseAliases:
+    def test_no_env_returns_single_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        assert Settings().database_aliases == DatabaseAliases(
+            names=[DEFAULT_DB], default=DEFAULT_DB
+        )
+
+    def test_pgdatabase_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGDATABASE", "app")
+        assert Settings().database_aliases == DatabaseAliases(names=["app"], default="app")
+
+    def test_pgdatabase_plus_extras(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGDATABASE", "app")
+        monkeypatch.setenv("PGLENS_DATABASES", "azure_sys, Analytics")
+        assert Settings().database_aliases == DatabaseAliases(
+            names=["app", "azure_sys", "Analytics"], default="app"
+        )
+
+    def test_pgdatabase_dedupes_from_extras(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGDATABASE", "app")
+        monkeypatch.setenv("PGLENS_DATABASES", "app,azure_sys")
+        assert Settings().database_aliases.names == ["app", "azure_sys"]
+
+    def test_extras_only_without_pgdatabase(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGLENS_DATABASES", "app, azure_sys ,Analytics")
+        # Without PGDATABASE the first listed alias becomes the default.
+        assert Settings().database_aliases == DatabaseAliases(
+            names=["app", "azure_sys", "Analytics"], default="app"
+        )
+
+    def test_pglens_databases_dedupes_itself(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGLENS_DATABASES", "app,app,azure_sys")
+        assert Settings().database_aliases.names == ["app", "azure_sys"]
+
+    def test_pgdatabase_preserves_case(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Postgres dbnames are case-sensitive; the original case must survive
+        # so asyncpg connects to the right database (issue #16).
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGDATABASE", "MyApp")
+        assert Settings().database_aliases == DatabaseAliases(names=["MyApp"], default="MyApp")

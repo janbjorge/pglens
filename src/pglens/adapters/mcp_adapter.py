@@ -1,6 +1,5 @@
 """MCP server backed by asyncpg."""
 
-import os
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -9,9 +8,7 @@ import asyncpg
 from mcp.server.mcpserver import Context, MCPServer
 
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
-from pglens.core.settings import Settings
-
-DEFAULT_DB = "default"
+from pglens.core.settings import DEFAULT_DB, Settings
 
 
 @dataclass
@@ -38,64 +35,30 @@ class Databases:
 Ctx = Context[Databases, object]
 
 
-def _collect_databases() -> tuple[list[str], str]:
-    """Resolve configured aliases and default alias from env.
-
-    Configuration uses libpq env vars only (no connection strings):
-
-    - ``PGDATABASE`` is the primary alias and the default target when a tool
-      is called without ``database=``. ``PGHOST``, ``PGUSER``, ``PGPASSWORD``,
-      ``PGSSLMODE`` (etc.) supply host and credentials shared by every pool.
-    - ``PGLENS_DATABASES=a,b,c`` lists additional dbnames on the same host
-      that get their own pool/alias. Entries equal to ``PGDATABASE`` are
-      deduplicated.
-
-    If neither ``PGDATABASE`` nor ``PGLENS_DATABASES`` is set, a single
-    ``default`` alias is configured that relies entirely on libpq's own
-    default behavior (e.g. dbname = ``PGUSER``).
-
-    Names are used verbatim as Postgres dbnames, which are case-sensitive.
-    """
-    primary = os.environ.get("PGDATABASE", "").strip() or None
-
-    extras: list[str] = []
-    raw = os.environ.get("PGLENS_DATABASES", "").strip()
-    if raw:
-        for part in raw.split(","):
-            name = part.strip()
-            if name and name not in extras and name != primary:
-                extras.append(name)
-
-    if primary is not None:
-        return [primary, *extras], primary
-    if extras:
-        return extras, extras[0]
-    return [DEFAULT_DB], DEFAULT_DB
-
-
 @asynccontextmanager
 async def app_lifespan(_server: MCPServer[Databases]) -> AsyncIterator[Databases]:
-    names, default_alias = _collect_databases()
+    # The single place the environment is read; everything downstream takes
+    # what it needs from this instance.
     settings = Settings()
-    server_settings = settings.server_settings()
-    command_timeout = settings.command_timeout
+    aliases = settings.database_aliases
+    pool_options = settings.pool_options
     async with AsyncExitStack() as stack:
         databases: dict[str, AsyncpgDatabase] = {}
-        for name in names:
+        for name in aliases.names:
             # When alias is the synthetic 'default' (no PGLENS_DATABASES set),
             # let libpq env (including PGDATABASE) decide the dbname.
-            dbname = None if name == DEFAULT_DB and len(names) == 1 else name
+            dbname = None if name == DEFAULT_DB and len(aliases.names) == 1 else name
             pool = await stack.enter_async_context(
                 asyncpg.create_pool(
                     database=dbname,
                     min_size=1,
                     max_size=5,
-                    server_settings=server_settings,
-                    command_timeout=command_timeout,
+                    server_settings=pool_options.server_settings,
+                    command_timeout=pool_options.command_timeout,
                 )
             )
             databases[name] = AsyncpgDatabase(pool)
-        yield Databases(databases, default_alias)
+        yield Databases(databases, aliases.default)
 
 
 mcp = MCPServer("pglens", lifespan=app_lifespan)

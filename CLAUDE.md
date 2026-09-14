@@ -44,7 +44,7 @@ asyncpg pool → PostgreSQL (readonly transactions)
 - **`src/pglens/adapters/mcp_adapter.py`** — Creates the `MCPServer` (mcp 2.x) server, manages the asyncpg pool lifespan, and imports tool modules (which register themselves via decorators at import time).
 - **`src/pglens/adapters/tools/`** — Tool modules organized by category: `schema.py`, `exploration.py`, `query.py`, `health.py`, `safety.py`. Each tool is a thin wrapper that calls the corresponding `AsyncpgDatabase` method.
 - **`src/pglens/core/types.py`** — `Annotated` type aliases (e.g., `Schema`, `TableName`, `SQL`) whose descriptions surface in MCP tool schemas.
-- **`src/pglens/core/settings.py`** — `Settings`, a pydantic-settings `BaseSettings` reading `PGLENS_*` timeouts. Parsing and range validation are pydantic's; don't hand-roll env parsing. Instantiated in `app_lifespan` and passed explicitly (no module-level singleton).
+- **`src/pglens/core/settings.py`** — `Settings`, a pydantic-settings `BaseSettings` holding all configuration (database aliases and timeouts). Parsing and validation are pydantic's; don't hand-roll env parsing. Derived config is exposed as `computed_field` properties returning frozen models (`DatabaseAliases`, `PoolOptions`) — not tuples or dicts. **Instantiated exactly once, in `app_lifespan`, and passed down from there**; nothing else reads the environment, and there is no module-level singleton.
 
 ## Adding a new tool
 
