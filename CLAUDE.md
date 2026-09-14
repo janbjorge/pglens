@@ -40,10 +40,11 @@ AsyncpgDatabase (adapters/asyncpg_adapter.py)  ←  all SQL lives here
 asyncpg pool → PostgreSQL (readonly transactions)
 ```
 
-- **`src/pglens/adapters/asyncpg_adapter.py`** — Single file containing all database methods (~30). Connections are read-only at the server level (`default_transaction_read_only=on` via pool `server_settings`, plus a statement timeout and `application_name=pglens`); user-influenced queries also use `transaction(readonly=True)`. Identifiers are quoted with `quote_ident()` from `core/sql.py`.
+- **`src/pglens/adapters/asyncpg_adapter.py`** — Single file containing all database methods (~30). Connections are read-only at the server level (`default_transaction_read_only=on` via pool `server_settings`, plus `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`, and `application_name=pglens`); user-influenced queries also use `transaction(readonly=True)`. The pool also carries a client-side `command_timeout` set above the statement timeout. Identifiers are quoted with `quote_ident()` from `core/sql.py`.
 - **`src/pglens/adapters/mcp_adapter.py`** — Creates the `MCPServer` (mcp 2.x) server, manages the asyncpg pool lifespan, and imports tool modules (which register themselves via decorators at import time).
 - **`src/pglens/adapters/tools/`** — Tool modules organized by category: `schema.py`, `exploration.py`, `query.py`, `health.py`, `safety.py`. Each tool is a thin wrapper that calls the corresponding `AsyncpgDatabase` method.
 - **`src/pglens/core/types.py`** — `Annotated` type aliases (e.g., `Schema`, `TableName`, `SQL`) whose descriptions surface in MCP tool schemas.
+- **`src/pglens/core/settings.py`** — `Settings`, a pydantic-settings `BaseSettings` holding all configuration (database aliases and timeouts). Parsing and validation are pydantic's; don't hand-roll env parsing. Derived config is exposed as `computed_field` properties returning frozen models (`DatabaseAliases`, `PoolOptions`) — not tuples or dicts. **Instantiated exactly once, in `app_lifespan`, and passed down from there**; nothing else reads the environment, and there is no module-level singleton.
 
 ## Adding a new tool
 
