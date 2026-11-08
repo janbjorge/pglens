@@ -134,27 +134,27 @@ class TestToolWiring:
             (
                 "describe_object",
                 {"name": "v", "kind": "view"},
-                ["list_views", "object_dependencies"],
+                ["describe_view", "object_dependencies"],
             ),
             (
                 "describe_object",
                 {"name": "m", "kind": "matview"},
-                ["matview_status", "object_dependencies"],
+                ["describe_matview", "object_dependencies"],
             ),
             (
                 "describe_object",
                 {"name": "f", "kind": "function"},
-                ["list_functions", "object_dependencies"],
+                ["describe_function", "object_dependencies"],
             ),
             (
                 "describe_object",
                 {"name": "s", "kind": "sequence"},
-                ["sequence_health", "object_dependencies"],
+                ["describe_sequence", "object_dependencies"],
             ),
             (
                 "describe_object",
                 {"name": "i", "kind": "index"},
-                ["list_indexes", "object_dependencies"],
+                ["describe_index", "object_dependencies"],
             ),
             (
                 "find_join_path",
@@ -220,15 +220,14 @@ class TestToolWiring:
         result = await _run("list_objects", mock_db, kind="table", detail="names")
         assert result == [{"table_name": "orders"}]
 
-    async def test_describe_object_non_table_filters_the_catalogue_by_name(self) -> None:
+    async def test_describe_object_non_table_queries_by_name(self) -> None:
         mock_db = _mock_db()
-        mock_db.list_views.return_value = [
-            {"view_name": "active_orders", "definition": "SELECT 1"},
-            {"view_name": "other", "definition": "SELECT 2"},
+        mock_db.describe_view.return_value = [
+            {"view_name": "active_orders", "definition": "SELECT 1"}
         ]
         mock_db.object_dependencies.return_value = [{"dependent_name": "x"}]
         result = await _run("describe_object", mock_db, name="active_orders", kind="view")
-        mock_db.list_views.assert_awaited_once_with("public", 1000, "full")
+        mock_db.describe_view.assert_awaited_once_with("active_orders", "public")
         assert result == {
             "object": "public.active_orders",
             "kind": "view",

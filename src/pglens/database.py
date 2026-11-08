@@ -378,6 +378,140 @@ class AsyncpgDatabase:
             limit,
         )
 
+    async def describe_view(self, name: str, schema: str) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                v.table_name AS view_name,
+                obj_description(
+                    (quote_ident(v.table_schema) || '.' ||
+                     quote_ident(v.table_name))::regclass
+                ) AS description,
+                pg_get_viewdef(
+                    (quote_ident(v.table_schema) || '.' ||
+                     quote_ident(v.table_name))::regclass, true
+                ) AS definition
+            FROM information_schema.views v
+            WHERE v.table_schema = $1 AND v.table_name = $2
+            """,
+            schema,
+            name,
+        )
+
+    async def describe_matview(self, name: str, schema: str) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                m.matviewname AS matview_name,
+                m.ispopulated,
+                m.definition,
+                pg_size_pretty(pg_total_relation_size(
+                    (quote_ident(m.schemaname) || '.' ||
+                     quote_ident(m.matviewname))::regclass
+                )) AS total_size,
+                EXISTS (
+                    SELECT 1 FROM pg_index i
+                    WHERE i.indrelid = (
+                        quote_ident(m.schemaname) || '.' ||
+                        quote_ident(m.matviewname)
+                    )::regclass AND i.indisunique
+                ) AS has_unique_index
+            FROM pg_matviews m
+            WHERE m.schemaname = $1 AND m.matviewname = $2
+            """,
+            schema,
+            name,
+        )
+
+    async def describe_index(self, name: str, schema: str) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                i.relname AS index_name,
+                t.relname AS table_name,
+                ix.indisunique AS is_unique,
+                ix.indisprimary AS is_primary,
+                am.amname AS index_type,
+                pg_get_indexdef(ix.indexrelid) AS definition,
+                ix.indisvalid AS is_valid,
+                pg_size_pretty(pg_relation_size(ix.indexrelid)) AS index_size,
+                pg_relation_size(ix.indexrelid) AS index_size_bytes,
+                s.idx_scan AS scans_since_reset,
+                s.idx_tup_read AS tuples_read,
+                s.idx_tup_fetch AS tuples_fetched
+            FROM pg_index ix
+            JOIN pg_class i ON i.oid = ix.indexrelid
+            JOIN pg_class t ON t.oid = ix.indrelid
+            JOIN pg_namespace n ON t.relnamespace = n.oid
+            JOIN pg_am am ON i.relam = am.oid
+            LEFT JOIN pg_stat_user_indexes s
+                ON s.indexrelid = ix.indexrelid
+            WHERE n.nspname = $1 AND i.relname = $2
+            ORDER BY t.relname, i.relname
+            """,
+            schema,
+            name,
+        )
+
+    async def describe_function(self, name: str, schema: str) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                p.proname AS function_name,
+                pg_get_function_arguments(p.oid) AS arguments,
+                pg_get_function_result(p.oid) AS return_type,
+                l.lanname AS language,
+                CASE p.provolatile
+                    WHEN 'i' THEN 'immutable'
+                    WHEN 's' THEN 'stable'
+                    WHEN 'v' THEN 'volatile'
+                END AS volatility,
+                CASE p.prokind
+                    WHEN 'f' THEN 'function'
+                    WHEN 'p' THEN 'procedure'
+                    WHEN 'a' THEN 'aggregate'
+                    WHEN 'w' THEN 'window'
+                END AS kind,
+                obj_description(p.oid) AS description,
+                p.prosrc AS source
+            FROM pg_proc p
+            JOIN pg_namespace n ON p.pronamespace = n.oid
+            JOIN pg_language l ON p.prolang = l.oid
+            WHERE n.nspname = $1 AND p.proname = $2 AND p.prokind != 'a'
+            ORDER BY p.proname
+            """,
+            schema,
+            name,
+        )
+
+    async def describe_sequence(self, name: str, schema: str) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                s.sequencename AS sequence_name,
+                s.last_value,
+                s.start_value,
+                s.min_value,
+                s.max_value,
+                s.increment_by,
+                s.cycle AS is_cycled,
+                CASE WHEN s.max_value != s.min_value AND s.last_value IS NOT NULL
+                    THEN round(
+                        CASE WHEN s.increment_by < 0
+                            THEN 100.0 * (s.max_value - s.last_value)
+                                / (s.max_value - s.min_value)
+                            ELSE 100.0 * (s.last_value - s.min_value)
+                                / (s.max_value - s.min_value)
+                        END, 2
+                    )
+                END AS pct_consumed
+            FROM pg_sequences s
+            WHERE s.schemaname = $1 AND s.sequencename = $2
+            """,
+            schema,
+            name,
+        )
+
     # -- One table in depth --
 
     async def describe_table(
