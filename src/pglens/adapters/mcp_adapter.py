@@ -118,6 +118,11 @@ READ_ONLY = ToolAnnotations(
     open_world_hint=False,
 )
 
+# Claude Code defers MCP tool definitions behind tool search and loads only
+# the tools carrying this meta key at session start. Keep the set at three
+# to five tools; every one costs context in every session.
+ALWAYS_LOAD = {"anthropic/alwaysLoad": True}
+
 
 def db(ctx: Ctx, database: str | None = None) -> AsyncpgDatabase:
     registry: Databases = ctx.request_context.lifespan_context

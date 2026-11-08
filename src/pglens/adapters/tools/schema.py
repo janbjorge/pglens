@@ -1,6 +1,6 @@
 """Schema and discovery tools."""
 
-from pglens.adapters.mcp_adapter import READ_ONLY, Ctx, databases, db, mcp
+from pglens.adapters.mcp_adapter import ALWAYS_LOAD, READ_ONLY, Ctx, databases, db, mcp
 from pglens.core.types import (
     Database,
     MaxDepth,
@@ -34,7 +34,7 @@ async def list_schemas(ctx: Ctx, database: Database = None) -> list[dict[str, ob
     return await db(ctx, database).list_schemas()
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=READ_ONLY, meta=ALWAYS_LOAD)
 async def list_tables(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
@@ -62,7 +62,7 @@ async def list_extensions(ctx: Ctx, database: Database = None) -> list[dict[str,
     return await db(ctx, database).list_extensions()
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=READ_ONLY, meta=ALWAYS_LOAD)
 async def describe_table(
     ctx: Ctx,
     table_name: TableName,

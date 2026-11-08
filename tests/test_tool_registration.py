@@ -293,3 +293,20 @@ class TestToolAnnotations:
         )
         hints = {tool["name"]: tool["annotations"]["readOnlyHint"] for tool in payload["tools"]}
         assert hints and all(hints.values()), hints
+
+
+class TestAlwaysLoad:
+    async def test_always_load_set(self) -> None:
+        """Claude Code loads these upfront; every other tool stays deferred behind tool search."""
+        tools = await mcp.list_tools()
+        always = {
+            tool.name
+            for tool in tools
+            if tool.meta is not None and tool.meta.get("anthropic/alwaysLoad") is True
+        }
+        assert always == {"query", "describe_table", "list_tables", "column_values"}
+        assert len(always) <= 5
+        # The wire form carries the key under _meta.
+        payload = ListToolsResult(tools=tools).model_dump(by_alias=True, exclude_none=True)
+        wire = {tool["name"] for tool in payload["tools"] if "_meta" in tool}
+        assert wire == always

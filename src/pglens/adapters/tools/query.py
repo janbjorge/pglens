@@ -1,6 +1,6 @@
 """Query execution tools."""
 
-from pglens.adapters.mcp_adapter import READ_ONLY, Ctx, db, mcp
+from pglens.adapters.mcp_adapter import ALWAYS_LOAD, READ_ONLY, Ctx, db, mcp
 from pglens.core.types import SQL, Analyze, Buffers, Database, Limit, Offset
 
 
@@ -20,7 +20,7 @@ async def explain_query(
     return await db(ctx, database).explain_query(sql, analyze=analyze, buffers=buffers)
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=READ_ONLY, meta=ALWAYS_LOAD)
 async def query(
     ctx: Ctx,
     sql: SQL,
