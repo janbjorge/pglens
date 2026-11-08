@@ -733,7 +733,7 @@ the method.
 - Tool definitions cost context in every session; the surface is capped at 16,000
   characters by `test_tool_definition_budget`
 - The move from 31 tools to 9 kept the eval pass rate (21 of 21) and lowered input
-  tokens (see `evals/README.md`)
+  tokens (see `evaluation.md`)
 
 **Tradeoff:** The dispatching tools carry the longest descriptions, and a model must
 know the enum member to reach a capability.
@@ -901,7 +901,7 @@ Behaviour of the current code.
 
 ## References
 
-- `README.md`: user-facing tools, configuration and safety
-- `CLAUDE.md`: conventions, adding a capability, decided-against items
-- `evals/README.md`: tool-surface baseline and eval harness
+- [`README.md`](../README.md): user-facing tools, configuration and safety
+- [`CLAUDE.md`](../CLAUDE.md): contributor conventions and design constraints
+- [`evaluation.md`](evaluation.md): tool-surface baseline and eval harness
 - `tests/test_tool_registration.py`: the locked tool surface and enum wiring

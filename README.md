@@ -255,9 +255,9 @@ database.py   (SQL queries, asyncpg pool)
 PostgreSQL
 ```
 
-`AsyncpgDatabase` in `database.py` holds the asyncpg pool and all query methods. The tools in `tools.py` are thin wrappers that register via decorators and delegate to it. All queries read the built-in system catalogs (`pg_catalog` and `information_schema`), so no PostgreSQL extensions are required.
+`AsyncpgDatabase` in `database.py` holds the asyncpg pool and all query methods. The tools in `tools.py` are thin wrappers that register via decorators and delegate to it. Catalogue queries read the built-in system catalogs (`pg_catalog` and `information_schema`), so no PostgreSQL extensions are required.
 
-`evals/` holds a hand-run eval harness that drives `claude -p` through a set of database questions against a seeded container and records tool choices, tokens and pass rate, so changes to the tool surface can be compared before and after. See `evals/README.md`.
+`evals/` holds a hand-run eval harness that drives `claude -p` through a set of database questions against a seeded container and records tool choices, tokens and pass rate, so changes to the tool surface can be compared before and after. See [`docs/evaluation.md`](docs/evaluation.md).
 
 **Adding a capability:**
 
