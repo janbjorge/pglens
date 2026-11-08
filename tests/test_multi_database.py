@@ -33,9 +33,9 @@ class TestDatabasesRegistry:
         with pytest.raises(ValueError, match="missing"):
             reg.get("missing")
 
-    def test_names_sorted(self) -> None:
+    def test_names_list_the_default_first_then_declaration_order(self) -> None:
         reg = _registry("zeta", DEFAULT_DB, "alpha")
-        assert reg.names() == ["alpha", DEFAULT_DB, "zeta"]
+        assert reg.names() == [DEFAULT_DB, "zeta", "alpha"]
 
 
 class TestDbHelper:
@@ -57,7 +57,7 @@ class TestDatabaseInfoAliases:
         tool = mcp._tool_manager._tools["database_info"]
         result = await tool.fn(ctx=ctx)
         assert result["database_name"] == "app"
-        assert result["available_databases"] == ["azure_sys", DEFAULT_DB]
+        assert result["available_databases"] == [DEFAULT_DB, "azure_sys"]
 
 
 class TestToolForwardsDatabaseArg:

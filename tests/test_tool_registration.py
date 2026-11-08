@@ -209,6 +209,11 @@ class TestToolWiring:
         mock_db.list_tables.assert_awaited_once_with("public", 1000)
         assert result == [{"table_name": "orders"}]
 
+    async def test_list_objects_enum_is_scoped_to_the_schema(self) -> None:
+        mock_db = _mock_db()
+        await _run("list_objects", mock_db, kind="enum", schema="s", pattern="status", limit=5)
+        mock_db.search_enum_values.assert_awaited_once_with("status", "s", 5)
+
     async def test_list_objects_names_detail_keeps_identifiers_only(self) -> None:
         mock_db = _mock_db()
         mock_db.list_tables.return_value = [{"table_name": "orders", "estimated_row_count": 3}]
