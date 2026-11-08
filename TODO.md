@@ -12,16 +12,17 @@ Rules
 
 ## Baseline
 
-| Metric | Value (2026-11-08, after items 1-5) |
+| Metric | Value (2026-11-08, after items 1-7) |
 |---|---|
-| Tools | 31 |
-| Tool-definition JSON, compact | 40,716 chars (about 10k tokens at 4 chars/token) |
-| Average per tool | 1,313 chars |
-| Largest tools | query 2,100, list_indexes 1,922, explain_query 1,682 |
-| Parameters with a `description` in the schema | 91 of 91 |
-| Tools with annotations | 31 of 31 |
-| Server `instructions` | 2,289 chars |
+| Tools | 9 |
+| Tool-definition JSON, compact | 15,540 chars (about 4k tokens at 4 chars/token); `test_tool_definition_budget` caps it at 16,000 |
+| Average per tool | 1,727 chars |
+| Largest tools | list_objects 2,481, query 2,059, describe_object 1,935 |
+| Parameters with a `description` in the schema | 36 of 36 |
+| Tools with annotations | 9 of 9 |
+| Server `instructions` | 2,252 chars |
 | `query_guide` prompt | same text as the instructions |
+| Eval (`evals/run.py`, claude-opus-5-5, 21 tasks) | 21 of 21 passed, 39 tool calls, 11 picks outside `expect_tools`, 753k input tokens (`evals/results/0601988.json`); the 31-tool baseline was 21 of 21, 38 calls, 13 picks, 841k tokens (`evals/results/5674c3e-dirty.json`) |
 
 Measure with:
 
@@ -46,76 +47,6 @@ EOF
 ```
 
 Token figures are chars/4 estimates, not tokenizer counts. Good enough to track direction.
-
-## 7. Consolidate 31 tools into 9
-
-Win: high. Effort: large. Largest for non-Claude clients. Ship only if `evals/run.py` shows parity or better against the baseline below.
-
-Why
-- Selection accuracy falls as the catalogue grows: 92.4% at 15 tools to 78.2% at 640 (arXiv 2607.15593, https://arxiv.org/pdf/2607.15593); shorter candidate lists lift Claude Sonnet 4.6 from 87.1% to 93.1% (arXiv 2605.24660, https://arxiv.org/html/2605.24660v1); survey of the problem in https://doi.org/10.3390/a19060447.
-- Anthropic: "Too many tools or overlapping tools can also distract agents from pursuing efficient strategies." https://www.anthropic.com/engineering/writing-tools-for-agents
-- Cursor sends only the first 40 tools across all servers; pglens alone is 31. https://forum.cursor.com/t/tools-limited-to-40-total/67976
-- Comparable servers: DBHub ships 2 tools by default (`execute_sql`, `search_objects`), about 1.4k tokens, https://github.com/bytebase/dbhub; crystaldba postgres-mcp ships 9, with one `analyze_db_health(health_type=...)` for all health checks, https://github.com/crystaldba/postgres-mcp; Google MCP Toolbox's postgres preset ships 28 at about 19k tokens and gets criticized for it, https://dbhub.ai/blog/postgres-mcp-server-review-mcp-toolbox.
-- Code Mode (Cloudflare, `search()` plus `execute()`, https://blog.cloudflare.com/code-mode-mcp/; Anthropic, https://www.anthropic.com/engineering/code-execution-with-mcp) is the same shape: discovery plus execution. For Postgres the execution tool is `query`, SQL is the code, and the discovery tool is object search. See "Decided against" for why no extra sandbox.
-- In Claude Code the token win is already taken by tool search. The win there is fewer wrong picks and fewer overlapping tools. On every other client it is both.
-- Baseline `evals/results/5674c3e-dirty.json` (claude-opus-5-5, 21 tasks, 2026-11-08): 21 of 21 passed, 38 tool calls, 13 picks outside `expect_tools`, $1.17. In 7 tasks the model wrote catalog SQL through `query` instead of using the dedicated tool (`unused_indexes`, `table_sizes`, `search_enum_values`, `search_columns`, `list_functions`, `sequence_health`, `matview_status`), and in 2 more it followed the dedicated tool with a `query` to double-check. Never called: `sample_rows`, `search_data`, `search_enum_values`, `search_columns`, `list_functions`, `table_sizes`, `unused_indexes`, `list_schemas`, `list_indexes`, `column_stats`, `find_join_path`, `slow_queries`, `table_health`, `active_queries`, `replication_status`, `io_stats`, `maintenance_progress`, `list_extensions`. `describe_table` carried the join tasks (4 calls in `two_hop_join`). The model treats `query` as the universal tool; the consolidation should keep `query` central and fold the catalogue tools behind a few enum-parameterized entry points.
-
-Target surface (adapter methods and their tests stay; only `adapters/tools/*.py` changes)
-
-| New tool | Replaces | Signature |
-|---|---|---|
-| `database_info` | database_info, list_schemas | unchanged, plus a `schemas` key with the `list_schemas` rows |
-| `list_objects` | list_tables, list_views, list_indexes, list_functions, list_extensions, search_columns, search_enum_values, matview_status, sequence_health (listing part) | `kind: Literal["table","view","matview","index","function","sequence","enum","extension","column"]`, `schema="public"`, `pattern: str | None = None` (case-insensitive substring, the `ILIKE` escaping from `search_columns`), `detail: Detail = "summary"`, `limit: ListLimit = 100`, `database` |
-| `describe_object` | describe_table, list_triggers, list_policies, object_dependencies | `name`, `kind: Literal["table","view","matview","function","sequence","index"] = "table"`, `schema`, `database`. For `table`: today's `describe_table` dict plus `triggers`, `policies`, `dependents`. Other kinds: `definition` plus `dependents` |
-| `find_join_path` | unchanged | unchanged |
-| `column_profile` | column_values, column_stats | `table_name`, `column_name`, `top_n: TopN = 20`, `schema`, `database`; returns `{"stats": <column_stats>, "top_values": <column_values>}` |
-| `query` | query, sample_rows, search_data | unchanged; sampling and keyword search become SQL idioms in the server instructions |
-| `explain_query` | unchanged | unchanged |
-| `health` | table_health, table_sizes, unused_indexes, sequence_health, matview_status, io_stats, slow_queries | `checks: list[Literal["tables","sizes","indexes","sequences","matviews","io","slow_queries"]] | None = None` (None means all), `schema`, `limit: TopQueries = 20` for slow_queries, `database`; returns a dict keyed by check. Use a list of literals, not a comma string, so the schema carries the enum |
-| `activity` | active_queries, blocking_locks, maintenance_progress, replication_status | `views: list[Literal["sessions","locks","maintenance","replication"]] | None = None`, `database`; dict keyed by view |
-
-- `sample_rows` and `search_data` were never called in the baseline; the model sampled with `query` on its own. Remove them.
-- Version-gated SQL (PG16/17/18 branches in `table_health`, `slow_queries`, `io_stats`, `maintenance_progress`, `replication_status`) is the knowledge worth keeping server-side. It moves untouched behind `health` and `activity`.
-- Breaking change: `feat!:` commit, BREAKING CHANGE footer listing all 22 removed names, major version tag, same as #20 did.
-
-Regression tests
-- `tests/test_tool_registration.py`: `EXPECTED_TOOLS` becomes the 9 names; `test_no_unexpected_tools` locks the surface. `test_tool_delegates_to_db_method` currently asserts exactly one db call per tool; change it to a mapping from (tool, arguments) to the exact ordered list of `AsyncpgDatabase` methods expected, and parametrize over every `kind`, `check` and `view` value so each enum member is wired. `health(checks=None)` must call all seven methods; `health(checks=["io"])` exactly one.
-- `test_tool_definition_budget`: total compact JSON of `mcp.list_tools()` stays under 14,000 characters. Stops regrowth. Today's 31 described tools measure 32,996 characters, 1,064 each; 9 richer tools at about 1,500 each fit.
-- `test_tool_count`: `len(mcp.list_tools()) <= 10`.
-- `test_instructions_name_only_real_tools` and `tests/test_evals_tasks.py` catch stale names.
-- `tests/test_integration.py`: one test per new tool against postgres:18. `list_objects(kind="column", pattern="email")` finds the seeded column; `describe_object` on the seeded table returns the trigger and the policy; `column_profile` returns both sections; `health()` returns all seven keys; `activity()` returns all four.
-- Run `uv run python evals/run.py` on the branch and commit the result file next to the baseline. Ship only if pass rate stays at 21 of 21 and picks outside `expect_tools` are fewer than 13.
-
-Done when
-- Baseline table shows 9 tools and under 14,000 characters, eval result committed, README tables rewritten.
-
-Docs
-- README: the four tool tables collapse into one 9-row table; the opening line's "31 MCP tools" changes; the `column_values` call-out becomes `column_profile`.
-- CLAUDE.md: "31 tools" in the first paragraph; "Adding a new tool" becomes "Adding a capability": add a db method, then add a `kind`, `check` or `view` literal and its wiring, not a new tool.
-- Server instructions (`INSTRUCTIONS` in `mcp_adapter.py`) and `evals/tasks.json` updated to the new names.
-
-## 8. Feature groups, fallback only
-
-Win: low once item 7 lands. Effort: medium. Non-Claude clients, locked-down setups. Do this only if item 7 stalls.
-
-Why
-- Supabase added `--features` groups because "many MCP clients limit the number of tools you can connect to them" and to shrink the blast radius. https://supabase.com/blog/remote-mcp-server
-- Application developers rarely need DBA tools; a smaller surface is also a smaller attack surface.
-
-Change
-- `Settings.tool_groups: Annotated[list[StrippedStr], NoDecode]`, env `PGLENS_TOOLS`, comma-separated, default all groups, same validator pattern as `extra_databases`. Groups: `core` (schema, exploration, query, safety modules) and `health` (health module). Unknown group name fails at startup with a `ValidationError`.
-- Each tool module exposes `GROUP = "core"` or `"health"`; `mcp_adapter.py` builds a name-to-group map at import.
-- In `app_lifespan`, before `yield`, call `mcp.remove_tool(name)` for every tool whose group is disabled. `MCPServer.remove_tool(name)` exists in mcp 2.0.0. The lifespan runs before any `tools/list`, and Settings stays instantiated once, in `app_lifespan`.
-
-Regression tests
-- `tests/test_settings.py`: `PGLENS_TOOLS=core` parses to `["core"]`; `PGLENS_TOOLS=nope` raises `ValidationError`; unset means all groups.
-- `tests/test_multi_database.py` pattern (patched `asyncpg.create_pool`): entering `app_lifespan` with `PGLENS_TOOLS=core` leaves no health-module tool in `mcp.list_tools()`; with the default, all tools remain.
-
-Done when
-- `PGLENS_TOOLS=core uvx pglens` lists only core tools in a client.
-
-Docs
-- README configuration table: `PGLENS_TOOLS` row and a short "Feature groups" subsection.
 
 ## Decided against
 

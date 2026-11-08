@@ -1,101 +1,27 @@
-"""Data exploration tools — sample data, column values, search."""
+"""Data exploration tools."""
 
 from pglens.adapters.mcp_adapter import ALWAYS_LOAD, READ_ONLY, Ctx, db, mcp
-from pglens.core.types import (
-    ColumnKeyword,
-    ColumnName,
-    Database,
-    EnumKeyword,
-    ListLimit,
-    SampleSize,
-    Schema,
-    SearchKeyword,
-    TableName,
-    TopN,
-)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def sample_rows(
-    ctx: Ctx,
-    table_name: TableName,
-    n: SampleSize = 5,
-    schema: Schema = "public",
-    database: Database = None,
-) -> list[dict[str, object]]:
-    """Get random rows from a table to see real data shapes, NULL patterns, and value formats.
-    Useful before writing WHERE clauses or aggregations. Long text cells are cut and end
-    with "…[truncated, N chars total]".
-    """
-    return await db(ctx, database).sample_rows(table_name, n, schema)
+from pglens.core.types import ColumnName, Database, Schema, TableName, TopN
 
 
 @mcp.tool(annotations=READ_ONLY, meta=ALWAYS_LOAD)
-async def column_values(
+async def column_profile(
     ctx: Ctx,
     table_name: TableName,
     column_name: ColumnName,
     top_n: TopN = 20,
     schema: Schema = "public",
     database: Database = None,
-) -> list[dict[str, object]]:
-    """Show the most common distinct values in a column with their row counts.
-    Call this before filtering on status, type, category, or other low-cardinality
-    columns to use the correct values in WHERE clauses.
-    """
-    return await db(ctx, database).column_values(table_name, column_name, top_n, schema)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def column_stats(
-    ctx: Ctx,
-    table_name: TableName,
-    column_name: ColumnName,
-    schema: Schema = "public",
-    database: Database = None,
 ) -> dict[str, object]:
-    """Get statistics for a column: min, max, null fraction, distinct count,
-    most common values, and correlation. Uses data already collected by ANALYZE
-    so it is essentially free. Use this for numeric or date columns where
-    column_values would return too many distinct values.
+    """Profile one column. `stats`: null fraction, distinct count, min, max, most common
+    values and correlation from ANALYZE statistics, so it is cheap even on big tables.
+    `top_values`: the most frequent distinct values with their row counts, from a live
+    GROUP BY. Call this before filtering on status, type or category columns so WHERE
+    clauses use values that exist, and on numeric or date columns to learn the range.
     """
-    return await db(ctx, database).column_stats(table_name, column_name, schema)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def search_data(
-    ctx: Ctx,
-    table_name: TableName,
-    keyword: SearchKeyword,
-    schema: Schema = "public",
-    database: Database = None,
-) -> list[dict[str, object]]:
-    """Search for a keyword across all text/varchar columns in a table (case-insensitive).
-    Returns up to 50 matching rows. Useful when you know a value exists but not which column.
-    Long text cells are cut and end with "…[truncated, N chars total]".
-    """
-    return await db(ctx, database).search_data(table_name, keyword, schema)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def search_columns(
-    ctx: Ctx,
-    keyword: ColumnKeyword,
-    schema: Schema = "public",
-    limit: ListLimit = 100,
-    database: Database = None,
-) -> list[dict[str, object]]:
-    """Search for columns by name across all tables in the schema.
-    Use when you need a field like 'email' or 'created_at' but don't know which table has it.
-    """
-    return await db(ctx, database).search_columns(keyword, schema, limit)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def search_enum_values(
-    ctx: Ctx, keyword: EnumKeyword = "", database: Database = None
-) -> list[dict[str, object]]:
-    """List Postgres enum types and their allowed values, filtered by keyword.
-    Check this before filtering on enum columns to avoid using values that don't exist.
-    """
-    return await db(ctx, database).search_enum_values(keyword)
+    source = db(ctx, database)
+    return {
+        "column": f"{schema}.{table_name}.{column_name}",
+        "stats": await source.column_stats(table_name, column_name, schema),
+        "top_values": await source.column_values(table_name, column_name, top_n, schema),
+    }

@@ -29,7 +29,9 @@ async def query(
     database: Database = None,
 ) -> list[dict[str, object]]:
     """Execute a read-only SQL query and return up to 500 rows.
-    Use describe_table and column_values first to ensure correct column names and filter values.
+    Use describe_object and column_profile first to ensure correct column names and
+    filter values. Sample rows with ORDER BY random() LIMIT 5; search text columns
+    with ILIKE '%keyword%'.
     Supports limit/offset for pagination, but large offsets degrade performance.
     For large result sets, prefer keyset pagination in your SQL
     (e.g. WHERE id > last_seen_id ORDER BY id) over high offset values.

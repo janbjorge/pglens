@@ -10,7 +10,7 @@
       ]
     },
     "expect_tools": [
-      "column_values",
+      "column_profile",
       "query"
     ]
   },
@@ -23,7 +23,7 @@
       ]
     },
     "expect_tools": [
-      "describe_table",
+      "describe_object",
       "find_join_path",
       "query"
     ]
@@ -37,7 +37,7 @@
       ]
     },
     "expect_tools": [
-      "describe_table",
+      "describe_object",
       "find_join_path",
       "query"
     ]
@@ -52,7 +52,7 @@
       ]
     },
     "expect_tools": [
-      "describe_table"
+      "describe_object"
     ]
   },
   {
@@ -74,7 +74,7 @@
       ]
     },
     "expect_tools": [
-      "unused_indexes"
+      "health"
     ]
   },
   {
@@ -84,7 +84,7 @@
       "regex": "(?i)\\d+ ?(bytes|kb|mb)"
     },
     "expect_tools": [
-      "table_sizes"
+      "health"
     ]
   },
   {
@@ -94,7 +94,7 @@
       "regex": "(?i)\\b(no|none|not|0)\\b"
     },
     "expect_tools": [
-      "blocking_locks"
+      "activity"
     ]
   },
   {
@@ -122,7 +122,7 @@
       ]
     },
     "expect_tools": [
-      "search_enum_values"
+      "list_objects"
     ]
   },
   {
@@ -132,7 +132,7 @@
       "regex": "\\b3\\b"
     },
     "expect_tools": [
-      "column_values",
+      "column_profile",
       "query"
     ]
   },
@@ -146,7 +146,7 @@
       ]
     },
     "expect_tools": [
-      "search_columns"
+      "list_objects"
     ]
   },
   {
@@ -168,7 +168,8 @@
       ]
     },
     "expect_tools": [
-      "list_functions"
+      "list_objects",
+      "describe_object"
     ]
   },
   {
@@ -181,7 +182,7 @@
       ]
     },
     "expect_tools": [
-      "list_triggers"
+      "describe_object"
     ]
   },
   {
@@ -193,7 +194,7 @@
       ]
     },
     "expect_tools": [
-      "list_policies"
+      "describe_object"
     ]
   },
   {
@@ -205,7 +206,8 @@
       ]
     },
     "expect_tools": [
-      "list_views"
+      "list_objects",
+      "describe_object"
     ]
   },
   {
@@ -217,7 +219,8 @@
       ]
     },
     "expect_tools": [
-      "sequence_health"
+      "health",
+      "list_objects"
     ]
   },
   {
@@ -227,7 +230,8 @@
       "regex": "(?i)\\byes\\b|unique index"
     },
     "expect_tools": [
-      "matview_status"
+      "health",
+      "list_objects"
     ]
   },
   {
@@ -240,7 +244,7 @@
       ]
     },
     "expect_tools": [
-      "object_dependencies"
+      "describe_object"
     ]
   },
   {
@@ -250,7 +254,6 @@
       "regex": "(?i)widget|gizmo|thingamajig"
     },
     "expect_tools": [
-      "sample_rows",
       "query"
     ]
   }
