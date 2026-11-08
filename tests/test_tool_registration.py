@@ -202,11 +202,11 @@ class TestToolWiring:
         await _run(tool_name, mock_db, **kwargs)
         assert _called(mock_db) == expected_methods, tool_name
 
-    async def test_list_objects_pattern_reads_a_full_page_then_filters(self) -> None:
+    async def test_list_objects_passes_pattern_to_catalogue_query(self) -> None:
         mock_db = _mock_db()
-        mock_db.list_tables.return_value = [{"table_name": "orders"}, {"table_name": "users"}]
+        mock_db.list_tables.return_value = [{"table_name": "orders"}]
         result = await _run("list_objects", mock_db, kind="table", pattern="ORD", limit=5)
-        mock_db.list_tables.assert_awaited_once_with("public", 1000)
+        mock_db.list_tables.assert_awaited_once_with("public", 5, "ORD")
         assert result == [{"table_name": "orders"}]
 
     async def test_list_objects_enum_is_scoped_to_the_schema(self) -> None:
