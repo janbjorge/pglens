@@ -179,3 +179,73 @@ class TestToolWiring:
         assert called_methods == [db_method], (
             f"{tool_name}: expected call to db.{db_method}(), got {called_methods}"
         )
+
+
+async def _properties(tool_name: str) -> dict[str, dict[str, object]]:
+    """Return the input-schema properties a client sees for one tool, via tools/list."""
+    tools = {t.name: t for t in await mcp.list_tools()}
+    return {name: dict(prop) for name, prop in tools[tool_name].input_schema["properties"].items()}
+
+
+class TestToolSchemas:
+    """The schema is the only thing the model sees when it picks arguments.
+
+    The mcp SDK builds it from pydantic FieldInfo only, so a bare string in
+    Annotated is dropped without warning. These tests pin what must reach the client.
+    """
+
+    async def test_every_parameter_has_a_description(self) -> None:
+        missing = [
+            f"{tool.name}.{name}"
+            for tool in await mcp.list_tools()
+            for name, prop in tool.input_schema["properties"].items()
+            if not prop.get("description")
+        ]
+        assert not missing, f"Parameters without a description: {missing}"
+
+    async def test_object_type_is_an_enum(self) -> None:
+        props = await _properties("object_dependencies")
+        assert props["object_type"]["enum"] == [
+            "table",
+            "view",
+            "matview",
+            "function",
+            "sequence",
+            "index",
+        ]
+
+    @pytest.mark.parametrize(
+        "tool_name, param, minimum, maximum",
+        [
+            ("sample_rows", "n", 1, 100),
+            ("column_values", "top_n", 1, 100),
+            ("slow_queries", "limit", 1, 100),
+            ("find_join_path", "max_depth", 1, 6),
+            ("query", "limit", 1, 500),
+            ("query", "offset", 0, None),
+        ],
+    )
+    async def test_ranges_are_in_schema(
+        self, tool_name: str, param: str, minimum: int, maximum: int | None
+    ) -> None:
+        prop = (await _properties(tool_name))[param]
+        assert prop.get("minimum") == minimum
+        assert prop.get("maximum") == maximum
+
+    @pytest.mark.parametrize("tool_name", ["query", "explain_query"])
+    async def test_sql_description_mentions_placeholders(self, tool_name: str) -> None:
+        description = (await _properties(tool_name))["sql"]["description"]
+        assert isinstance(description, str)
+        assert "$1" in description
+
+    async def test_out_of_range_argument_is_rejected_before_the_db_call(self) -> None:
+        """The range is enforced by the SDK's argument validation, not only advertised."""
+        mock_db = AsyncMock(spec=AsyncpgDatabase)
+        with (
+            patch("pglens.adapters.tools.exploration.db", return_value=mock_db),
+            pytest.raises(Exception, match="(?i)less than or equal to 100"),
+        ):
+            await mcp._tool_manager.call_tool(
+                "sample_rows", {"table_name": "users", "n": 1000}, _make_ctx(mock_db)
+            )
+        assert mock_db.method_calls == []

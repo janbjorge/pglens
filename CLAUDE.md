@@ -43,7 +43,7 @@ asyncpg pool → PostgreSQL (readonly transactions)
 - **`src/pglens/adapters/asyncpg_adapter.py`** — Single file containing all database methods (~30). Connections are read-only at the server level (`default_transaction_read_only=on` via pool `server_settings`, plus `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`, and `application_name=pglens`); user-influenced queries also use `transaction(readonly=True)`. The pool also carries a client-side `command_timeout` set above the statement timeout. Identifiers are quoted with `quote_ident()` from `core/sql.py`.
 - **`src/pglens/adapters/mcp_adapter.py`** — Creates the `MCPServer` (mcp 2.x) server, manages the asyncpg pool lifespan, and imports tool modules (which register themselves via decorators at import time).
 - **`src/pglens/adapters/tools/`** — Tool modules organized by category: `schema.py`, `exploration.py`, `query.py`, `health.py`, `safety.py`. Each tool is a thin wrapper that calls the corresponding `AsyncpgDatabase` method.
-- **`src/pglens/core/types.py`** — `Annotated` type aliases (e.g., `Schema`, `TableName`, `SQL`) whose descriptions surface in MCP tool schemas.
+- **`src/pglens/core/types.py`** — `Annotated[T, Field(description=...)]` type aliases (e.g., `Schema`, `TableName`, `SQL`). The mcp SDK builds tool input schemas from pydantic `FieldInfo` only, so a bare string inside `Annotated` is silently dropped; descriptions, `Literal` enums and `ge`/`le` ranges declared here are what the model sees. Ranges mirror the clamps in `AsyncpgDatabase`.
 - **`src/pglens/core/settings.py`** — `Settings`, a pydantic-settings `BaseSettings` holding all configuration (database aliases and timeouts). Parsing and validation are pydantic's; don't hand-roll env parsing. Derived config is exposed as `computed_field` properties returning frozen models (`DatabaseAliases`, `PoolOptions`) — not tuples or dicts. **Instantiated exactly once, in `app_lifespan`, and passed down from there**; nothing else reads the environment, and there is no module-level singleton.
 
 ## Adding a new tool
@@ -54,7 +54,7 @@ asyncpg pool → PostgreSQL (readonly transactions)
 ## Key conventions
 
 - **SQL safety**: Always use `quote_ident()` (from `core/sql.py`) for identifiers, parameterized queries (`$1`, `$2`) for values, and `readonly=True` transactions. User SQL goes through `validate_select()`, which parses the statement with pglast, rejects anything that is not a single plain SELECT (no multi-statement input, no `SELECT INTO`, no writes hidden in CTEs, no `$n` placeholders), and returns normalized SQL that is safe to embed in a subquery.
-- **Parameter types**: Use `Annotated` types from `core/types.py` for all MCP tool parameters.
+- **Parameter types**: Use the `Annotated` aliases from `core/types.py` for all MCP tool parameters. New aliases need `Field(description=...)`; `tests/test_tool_registration.py` fails on any parameter without a description.
 - **Return values**: Convert asyncpg Records to dicts (`[dict(r) for r in rows]`) for JSON serialization.
 - **Schema default**: Most tools default the schema parameter to `"public"`.
 - **Tool registration**: Tool modules use decorator side effects at import time — they're imported as `import pglens.adapters.tools.schema as _schema` in `mcp_adapter.py`.
