@@ -6,6 +6,8 @@ and returns structurally correct results against a known schema.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 import pytest
 
 from pglens.database import AsyncpgDatabase
@@ -59,8 +61,25 @@ class TestSchemaDiscovery:
         users = next(t for t in tables if t["table_name"] == "users")
         assert users["description"] == "Application users"
 
-    async def test_list_tables_limit(self, db: AsyncpgDatabase) -> None:
-        assert len(await db.list_tables("public", limit=2)) == 2
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda db: db.list_tables("public", limit=1),
+            lambda db: db.list_views("public", limit=1),
+            lambda db: db.list_indexes("public", limit=1),
+            lambda db: db.list_functions("public", limit=1),
+            lambda db: db.table_health("public", limit=1),
+            lambda db: db.table_sizes("public", limit=1),
+            lambda db: db.unused_indexes("public", limit=1),
+            lambda db: db.sequence_health("public", limit=1),
+            lambda db: db.matview_status("public", limit=1),
+            lambda db: db.search_columns("id", "public", limit=1),
+        ],
+    )
+    async def test_limit_bounds_every_list_method(
+        self, db: AsyncpgDatabase, call: Callable[[AsyncpgDatabase], Awaitable[list[object]]]
+    ) -> None:
+        assert len(await call(db)) == 1
 
     async def test_list_views(self, db: AsyncpgDatabase) -> None:
         views = await db.list_views("public", detail="full")
@@ -91,6 +110,7 @@ class TestSchemaDiscovery:
         assert bio_idx["is_unique"] is False
         assert bio_idx["is_primary"] is False
         assert bio_idx["index_size"] is not None
+        assert bio_idx["is_valid"] is True
 
     async def test_list_indexes_covers_all_tables(self, db: AsyncpgDatabase) -> None:
         indexes = await db.list_indexes("public")
@@ -110,17 +130,30 @@ class TestSchemaDiscovery:
         assert fn["kind"] == "function"
         assert "source" not in fn  # summary is the default
 
-    async def test_list_functions_detail_levels(self, db: AsyncpgDatabase) -> None:
-        [names_row] = await db.list_functions("public", detail="names")
-        assert names_row == {"function_name": "update_modified_column"}
-        [full_row] = await db.list_functions("public", detail="full")
-        assert "NEW.created_at = now()" in str(full_row["source"])
-
-    async def test_list_views_definition_only_at_full(self, db: AsyncpgDatabase) -> None:
-        [summary_row] = await db.list_views("public")
-        assert "definition" not in summary_row
-        [full_row] = await db.list_views("public", detail="full")
-        assert "orders" in str(full_row["definition"])
+    @pytest.mark.parametrize(
+        ("method", "names", "heavy"),
+        [
+            ("list_functions", {"function_name"}, "source"),
+            ("list_views", {"view_name"}, "definition"),
+            ("list_indexes", {"index_name", "table_name"}, "definition"),
+            ("matview_status", {"matview_name"}, "definition"),
+        ],
+    )
+    async def test_detail_levels(
+        self, db: AsyncpgDatabase, method: str, names: set[str], heavy: str
+    ) -> None:
+        call = {
+            "list_functions": db.list_functions,
+            "list_views": db.list_views,
+            "list_indexes": db.list_indexes,
+            "matview_status": db.matview_status,
+        }[method]
+        names_row = (await call("public", detail="names"))[0]
+        summary_row = (await call("public"))[0]
+        full_row = (await call("public", detail="full"))[0]
+        assert set(names_row) == names
+        assert heavy not in summary_row and len(summary_row) > len(names_row)
+        assert full_row[heavy]
 
 
 class TestDescribeTable:
@@ -258,9 +291,6 @@ class TestDataExploration:
         assert len(result) >= 1
         assert any(r["table_name"] == "users" and r["column_name"] == "email" for r in result)
 
-    async def test_search_columns_limit(self, db: AsyncpgDatabase) -> None:
-        assert len(await db.search_columns("id", "public", limit=1)) == 1
-
     async def test_search_enum_values(self, db: AsyncpgDatabase) -> None:
         result = await db.search_enum_values("order_status")
         assert len(result) == 1
@@ -299,9 +329,27 @@ class TestQueryExecution:
         assert row["n"] == 7
         assert row["body"] == "x" * 1000 + "…[truncated, 5000 chars total]"
 
+    async def test_query_offset(self, db: AsyncpgDatabase) -> None:
+        rows = await db.query("SELECT generate_series(1, 10) AS n", limit=3, offset=4)
+        assert rows == [{"n": 5}, {"n": 6}, {"n": 7}]
+
+    async def test_max_cell_chars_zero_disables_truncation(self, db: AsyncpgDatabase) -> None:
+        untruncated = AsyncpgDatabase(pool=db.pool, max_cell_chars=0)
+        [row] = await untruncated.query("SELECT repeat('x', 5000) AS body")
+        assert row["body"] == "x" * 5000
+
     async def test_explain_query(self, db: AsyncpgDatabase) -> None:
         plan = await db.explain_query("SELECT * FROM users WHERE id = 1")
         assert "users" in plan.lower()
+        assert "actual time" not in plan
+
+    async def test_explain_analyze_runs_the_query(self, db: AsyncpgDatabase) -> None:
+        plan = await db.explain_query("SELECT * FROM users", analyze=True)
+        assert "actual time" in plan
+
+    async def test_explain_buffers(self, db: AsyncpgDatabase) -> None:
+        plan = await db.explain_query("SELECT * FROM users", analyze=True, buffers=True)
+        assert "Buffers:" in plan
 
     async def test_query_with_trailing_semicolon(self, db: AsyncpgDatabase) -> None:
         result = await db.query("SELECT count(*) AS n FROM users;")
@@ -313,71 +361,30 @@ class TestQueryExecution:
 
 
 class TestSQLParsingDefense:
-    """Verify that SQL validation blocks dangerous queries against a real database."""
+    """validate_select is unit-tested in tests/test_database.py; this proves the wiring:
+    a rejected statement never reaches the server and the data stays intact."""
 
-    async def test_query_allows_select(self, db: AsyncpgDatabase) -> None:
-        result = await db.query("SELECT 1 AS n")
-        assert result == [{"n": 1}]
+    @pytest.mark.parametrize(
+        ("sql", "message"),
+        [
+            ("SELECT 1; DROP TABLE users", "single SQL statement"),
+            ("DELETE FROM users", "Only SELECT"),
+            ("SELECT * INTO evil_copy FROM users", "SELECT INTO"),
+            ("WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x", "DELETE"),
+            ("SELECT * FROM users WHERE id = $1", "placeholders"),
+        ],
+    )
+    async def test_query_rejects_unsafe_sql(
+        self, db: AsyncpgDatabase, sql: str, message: str
+    ) -> None:
+        with pytest.raises(ValueError, match=message):
+            await db.query(sql)
+        assert await db.query("SELECT count(*) AS n FROM users") == [{"n": 3}]
 
-    async def test_query_allows_cte(self, db: AsyncpgDatabase) -> None:
-        result = await db.query("WITH cte AS (SELECT 1 AS n) SELECT * FROM cte")
-        assert result == [{"n": 1}]
-
-    async def test_query_blocks_multi_statement(self, db: AsyncpgDatabase) -> None:
-        with pytest.raises(ValueError, match="single SQL statement"):
-            await db.query("SELECT 1; DROP TABLE users")
-
-    async def test_query_blocks_insert(self, db: AsyncpgDatabase) -> None:
-        with pytest.raises(ValueError, match="Only SELECT"):
-            await db.query("INSERT INTO users(username, email) VALUES ('evil', 'e@e.com')")
-
-    async def test_query_blocks_update(self, db: AsyncpgDatabase) -> None:
-        with pytest.raises(ValueError, match="Only SELECT"):
-            await db.query("UPDATE users SET username = 'hacked'")
-
-    async def test_query_blocks_delete(self, db: AsyncpgDatabase) -> None:
-        with pytest.raises(ValueError, match="Only SELECT"):
-            await db.query("DELETE FROM users")
-
-    async def test_query_blocks_drop(self, db: AsyncpgDatabase) -> None:
-        with pytest.raises(ValueError, match="Only SELECT"):
-            await db.query("DROP TABLE users")
-
-    async def test_query_blocks_rollback_attack(self, db: AsyncpgDatabase) -> None:
-        with pytest.raises(ValueError, match="single SQL statement"):
-            await db.query("ROLLBACK; CREATE TABLE evil(id int)")
-
-    async def test_explain_blocks_non_select(self, db: AsyncpgDatabase) -> None:
+    async def test_explain_rejects_non_select(self, db: AsyncpgDatabase) -> None:
         with pytest.raises(ValueError, match="Only SELECT"):
             await db.explain_query("DELETE FROM users")
-
-    async def test_query_blocks_select_into(self, db: AsyncpgDatabase) -> None:
-        with pytest.raises(ValueError, match="SELECT INTO"):
-            await db.query("SELECT * INTO evil_copy FROM users")
-
-    async def test_query_blocks_write_in_cte(self, db: AsyncpgDatabase) -> None:
-        with pytest.raises(ValueError, match="DELETE"):
-            await db.query("WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x")
-
-    async def test_query_blocks_parameter_placeholders(self, db: AsyncpgDatabase) -> None:
-        with pytest.raises(ValueError, match="placeholders"):
-            await db.query("SELECT * FROM users WHERE id = $1")
-
-    async def test_data_unchanged_after_blocked_attacks(self, db: AsyncpgDatabase) -> None:
-        """Verify that blocked attacks didn't modify data."""
-        # Try several attacks, all should be blocked before reaching the DB
-        for sql in [
-            "DELETE FROM users",
-            "UPDATE users SET username = 'hacked'",
-            "INSERT INTO users(username, email) VALUES ('evil', 'e@e.com')",
-            "SELECT 1; DELETE FROM users",
-        ]:
-            with pytest.raises(ValueError):
-                await db.query(sql)
-
-        # Verify data is intact
-        result = await db.query("SELECT count(*) AS n FROM users")
-        assert result[0]["n"] == 3
+        assert await db.query("SELECT count(*) AS n FROM users") == [{"n": 3}]
 
 
 class TestHealthMonitoring:
