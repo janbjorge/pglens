@@ -203,6 +203,8 @@ If you installed pglens with `pip` instead of using `uvx`, replace `"command": "
 }
 ```
 
+Claude Code keeps MCP tool definitions behind tool search by default and loads only tool names and server instructions at session start. pglens marks `query`, `describe_table`, `list_tables` and `column_values` to load upfront, so the common path needs no search step; the other tools load on first use. To keep every pglens tool behind tool search, add `"alwaysLoad": false` to the server entry above (Claude Code v2.1.287 or later).
+
 #### Zed
 
 ```json

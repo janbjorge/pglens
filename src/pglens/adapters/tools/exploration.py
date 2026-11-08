@@ -1,6 +1,6 @@
 """Data exploration tools — sample data, column values, search."""
 
-from pglens.adapters.mcp_adapter import READ_ONLY, Ctx, db, mcp
+from pglens.adapters.mcp_adapter import ALWAYS_LOAD, READ_ONLY, Ctx, db, mcp
 from pglens.core.types import (
     ColumnKeyword,
     ColumnName,
@@ -28,7 +28,7 @@ async def sample_rows(
     return await db(ctx, database).sample_rows(table_name, n, schema)
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=READ_ONLY, meta=ALWAYS_LOAD)
 async def column_values(
     ctx: Ctx,
     table_name: TableName,

@@ -12,7 +12,7 @@ Rules
 
 ## Baseline
 
-| Metric | Value (2026-11-08, after items 1-3) |
+| Metric | Value (2026-11-08, after items 1-4) |
 |---|---|
 | Tools | 31 |
 | Tool-definition JSON, compact | 32,996 chars (about 8k tokens at 4 chars/token) |
@@ -46,27 +46,6 @@ EOF
 ```
 
 Token figures are chars/4 estimates, not tokenizer counts. Good enough to track direction.
-
-## 4. Mark the core tools to load upfront in Claude Code
-
-Win: medium-low. Effort: small. Claude Code only.
-
-Why
-- With tool search on, every pglens tool is deferred and costs a `ToolSearch` round trip before first use. Anthropic: "Keep your three to five most-used tools always loaded, defer the rest." https://www.anthropic.com/engineering/advanced-tool-use
-- Claude Code honors a per-tool `_meta["anthropic/alwaysLoad"]: true` in the `tools/list` entry. The person configuring the server can override it per server. https://code.claude.com/docs/en/mcp
-- Cost: about 800 tokens upfront per configured pglens server. With two servers (production, test) that is two sets.
-
-Change
-- `@mcp.tool(annotations=READ_ONLY, meta={"anthropic/alwaysLoad": True})` on `query`, `describe_table`, `list_tables`, `column_values`. After item 7 the set is `query`, `describe_object`, `list_objects`, `column_profile`. mcp 2.0.0 `MCPServer.tool` accepts `meta`; verified. Upfront-loaded descriptions are cut at 4,096 characters, deferred ones at 16,384; all pglens descriptions are under 700 today.
-
-Regression tests (`tests/test_tool_registration.py`)
-- `test_always_load_set`: the tools whose `tool.meta` has `"anthropic/alwaysLoad": True` are exactly the four names above, and there are at most five.
-
-Done when
-- `/context` in a Claude Code session lists the four pglens tools as loaded, the rest as deferred.
-
-Docs
-- README Claude Code section: one sentence on which tools load upfront and that `"alwaysLoad": false` in the server config defers them.
 
 ## 5. Put tool output on a diet
 
