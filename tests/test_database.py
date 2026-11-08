@@ -76,6 +76,18 @@ class TestDirectObjectDescriptions:
         assert "LIMIT" not in sql
 
 
+class TestCataloguePatterns:
+    async def test_list_tables_filters_before_limit(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool)
+        pool.fetch.return_value = []
+
+        await db.list_tables("public", limit=5, pattern="100%")
+
+        sql, schema, pattern, limit = pool.fetch.call_args[0]
+        assert "t.table_name ILIKE '%' || $2 || '%'" in sql
+        assert (schema, pattern, limit) == ("public", "100\\%", 5)
+
+
 class TestServerVersion:
     async def test_injected_version_skips_probe(self, pool: AsyncMock) -> None:
         db = AsyncpgDatabase(pool=pool, server_version_num=180000)
