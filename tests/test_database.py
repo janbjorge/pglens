@@ -130,25 +130,14 @@ class TestSlowQueries:
 
 
 class TestReplicationStatus:
-    async def test_shape(self, pool: AsyncMock) -> None:
-        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
+    async def test_reads_subscription_stats_whole(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool, server_version_num=150000)
         pool.fetchval.return_value = False
-        pool.fetch.side_effect = [
-            [make_record(application_name="standby1", state="streaming")],
-            [make_record(slot_name="slot1", active=False, retained_wal_bytes=1024)],
-            [make_record(subname="sub1", apply_error_count=0, confl_update_missing=2)],
-        ]
+        pool.fetch.side_effect = [[], [], [make_record(subname="sub1", apply_error_count=0)]]
         result = await db.replication_status()
         assert result["in_recovery"] is False
-        standbys = result["standbys"]
-        slots = result["slots"]
-        subscriptions = result["subscriptions"]
-        assert isinstance(standbys, list) and standbys[0]["state"] == "streaming"
-        assert isinstance(slots, list) and slots[0]["active"] is False
-        assert isinstance(subscriptions, list)
-        assert subscriptions[0]["confl_update_missing"] == 2
-        subscription_sql = pool.fetch.call_args_list[2][0][0]
-        assert "confl_insert_exists" in subscription_sql
+        assert result["subscriptions"] == [{"subname": "sub1", "apply_error_count": 0}]
+        assert "SELECT * FROM pg_stat_subscription_stats" in pool.fetch.call_args_list[2][0][0]
 
     async def test_pre_pg15_skips_subscription_stats(self, pool: AsyncMock) -> None:
         db = AsyncpgDatabase(pool=pool, server_version_num=140000)
@@ -157,15 +146,6 @@ class TestReplicationStatus:
         result = await db.replication_status()
         assert result["subscriptions"] == []
         assert pool.fetch.call_count == 2
-
-    async def test_pre_pg18_omits_conflict_columns(self, pool: AsyncMock) -> None:
-        db = AsyncpgDatabase(pool=pool, server_version_num=170000)
-        pool.fetchval.return_value = False
-        pool.fetch.side_effect = [[], [], []]
-        await db.replication_status()
-        subscription_sql = pool.fetch.call_args_list[2][0][0]
-        assert "pg_stat_subscription_stats" in subscription_sql
-        assert "confl_" not in subscription_sql
 
 
 class TestIoStats:
@@ -176,83 +156,30 @@ class TestIoStats:
         assert "pg_stat_io" in str(result[0]["error"])
         pool.fetch.assert_not_called()
 
-    async def test_pg16_omits_byte_columns(self, pool: AsyncMock) -> None:
+    async def test_reads_pg_stat_io_whole(self, pool: AsyncMock) -> None:
         db = AsyncpgDatabase(pool=pool, server_version_num=160000)
-        pool.fetch.return_value = []
-        await db.io_stats()
-        sql = pool.fetch.call_args[0][0]
-        assert "pg_stat_io" in sql
-        assert "read_bytes" not in sql
-
-    async def test_pg18_adds_byte_columns(self, pool: AsyncMock) -> None:
-        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
-        pool.fetch.return_value = [
-            make_record(
-                backend_type="client backend",
-                object="relation",
-                context="normal",
-                reads=100,
-                read_bytes=819200,
-                hits=5000,
-            ),
-        ]
+        pool.fetch.return_value = [make_record(backend_type="client backend", hits=5000)]
         result = await db.io_stats()
         sql = pool.fetch.call_args[0][0]
-        assert "read_bytes" in sql
-        assert "write_bytes" in sql
-        assert "extend_bytes" in sql
-        assert result[0]["hits"] == 5000
+        assert "SELECT *" in sql and "FROM pg_stat_io" in sql
+        assert result == [{"backend_type": "client backend", "hits": 5000}]
 
 
 class TestMaintenanceProgress:
-    async def test_shape(self, pool: AsyncMock) -> None:
-        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
-        pool.fetch.side_effect = [
-            [make_record(pid=1, phase="scanning heap", scanned_pct=42.0)],
-            [],
-            [],
-            [],
-        ]
+    async def test_reads_every_progress_view_whole(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool)
+        pool.fetch.side_effect = [[make_record(pid=1, phase="scanning heap")], [], [], []]
         result = await db.maintenance_progress()
-        assert set(result.keys()) == {"vacuum", "analyze", "create_index", "cluster"}
-        vacuum = result["vacuum"]
-        assert isinstance(vacuum, list) and vacuum[0]["scanned_pct"] == 42.0
-        assert result["cluster"] == []
-
-    async def test_pg18_includes_delay_time(self, pool: AsyncMock) -> None:
-        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
-        pool.fetch.side_effect = [[], [], [], []]
-        await db.maintenance_progress()
-        vacuum_sql = pool.fetch.call_args_list[0][0][0]
-        analyze_sql = pool.fetch.call_args_list[1][0][0]
-        assert "delay_time" in vacuum_sql
-        assert "indexes_total" in vacuum_sql
-        assert "delay_time" in analyze_sql
-
-    async def test_pg16_omits_gated_columns(self, pool: AsyncMock) -> None:
-        db = AsyncpgDatabase(pool=pool, server_version_num=160000)
-        pool.fetch.side_effect = [[], [], [], []]
-        await db.maintenance_progress()
-        vacuum_sql = pool.fetch.call_args_list[0][0][0]
-        analyze_sql = pool.fetch.call_args_list[1][0][0]
-        assert "delay_time" not in vacuum_sql
-        assert "indexes_total" not in vacuum_sql
-        assert "delay_time" not in analyze_sql
-
-    async def test_pg17_has_index_progress_but_no_delay(self, pool: AsyncMock) -> None:
-        db = AsyncpgDatabase(pool=pool, server_version_num=170000)
-        pool.fetch.side_effect = [[], [], [], []]
-        await db.maintenance_progress()
-        vacuum_sql = pool.fetch.call_args_list[0][0][0]
-        assert "indexes_total" in vacuum_sql
-        assert "delay_time" not in vacuum_sql
-
-    async def test_joins_pg_class_by_relid(self, pool: AsyncMock) -> None:
-        db = AsyncpgDatabase(pool=pool, server_version_num=180000)
-        pool.fetch.side_effect = [[], [], [], []]
-        await db.maintenance_progress()
-        for call in pool.fetch.call_args_list:
-            assert "c.oid = p.relid" in call[0][0]
+        assert result == {
+            "vacuum": [{"pid": 1, "phase": "scanning heap"}],
+            "analyze": [],
+            "create_index": [],
+            "cluster": [],
+        }
+        statements = [call[0][0] for call in pool.fetch.call_args_list]
+        assert all("p.*" in sql and "c.oid = p.relid" in sql for sql in statements)
+        assert "FROM pg_stat_progress_create_index" in statements[2]
+        assert "AS index_name" in statements[2]
 
 
 class TestValidateSelect:

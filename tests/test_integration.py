@@ -504,33 +504,31 @@ class TestMatviewsAndDependencies:
         assert mv["total_size"] is not None
 
     async def test_object_dependencies_table(self, db: AsyncpgDatabase) -> None:
-        deps = await db.object_dependencies("users", "table", "public")
-        # The view active_orders and matview order_summary select from users
-        # and must be reported as real relations, not internal _RETURN rules.
-        by_name = {d["dependent_name"]: d for d in deps}
-        assert "active_orders" in by_name
-        assert by_name["active_orders"]["dependent_type"] == "view"
-        assert by_name["active_orders"]["dependent_schema"] == "public"
-        assert "order_summary" in by_name
-        assert by_name["order_summary"]["dependent_type"] == "matview"
-        assert "_RETURN" not in by_name
+        deps = {
+            (d["dependent_type"], d["dependent"])
+            for d in await db.object_dependencies("users", "table", "public")
+        }
+        # What would break or go away: views through their rules, the foreign key that
+        # references the table, and the sequence the serial column owns.
+        assert ("view", "public.active_orders") in deps
+        assert ("materialized view", "public.order_summary") in deps
+        assert ("table constraint", "orders_user_id_fkey on public.orders") in deps
+        assert ("sequence", "public.users_id_seq") in deps
+        # The table's own indexes and constraints are parts of it, not dependents.
+        mentioned = " ".join(str(identity) for _, identity in deps)
+        assert "idx_users_bio" not in mentioned
+        assert "users_pkey" not in mentioned
+        assert "_RETURN" not in mentioned
 
-    async def test_object_dependencies_excludes_own_indexes(self, db: AsyncpgDatabase) -> None:
-        deps = await db.object_dependencies("users", "table", "public")
-        names = {d["dependent_name"] for d in deps}
-        assert "idx_users_bio" not in names
-        assert "users_pkey" not in names
-
-    async def test_object_dependencies_view(self, db: AsyncpgDatabase) -> None:
-        deps = await db.object_dependencies("active_orders", "view", "public")
-        # The view's own _RETURN rule must not be reported as a dependent
-        names = {d["dependent_name"] for d in deps}
-        assert "active_orders" not in names
-        assert "_RETURN" not in names
+    async def test_object_dependencies_view_skips_its_own_rule(self, db: AsyncpgDatabase) -> None:
+        assert await db.object_dependencies("active_orders", "view", "public") == []
 
     async def test_object_dependencies_function(self, db: AsyncpgDatabase) -> None:
         deps = await db.object_dependencies("update_modified_column", "function", "public")
-        assert isinstance(deps, list)
+        assert {
+            "dependent_type": "trigger",
+            "dependent": "trg_orders_modified on public.orders",
+        } in deps
 
 
 class TestSafeRefs:
