@@ -3,6 +3,7 @@
 from pglens.adapters.mcp_adapter import ALWAYS_LOAD, READ_ONLY, Ctx, databases, db, mcp
 from pglens.core.types import (
     Database,
+    Detail,
     ListLimit,
     MaxDepth,
     Schema,
@@ -47,12 +48,16 @@ async def list_tables(
 
 @mcp.tool(annotations=READ_ONLY)
 async def list_views(
-    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
+    ctx: Ctx,
+    schema: Schema = "public",
+    limit: ListLimit = 100,
+    detail: Detail = "summary",
+    database: Database = None,
 ) -> list[dict[str, object]]:
-    """List views with their SQL definitions.
+    """List views with their descriptions; detail='full' adds the SQL definition.
     Views often contain pre-joined queries that can save you from writing complex joins.
     """
-    return await db(ctx, database).list_views(schema, limit)
+    return await db(ctx, database).list_views(schema, limit, detail)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -68,14 +73,16 @@ async def describe_table(
     ctx: Ctx,
     table_name: TableName,
     schema: Schema = "public",
+    detail: Detail = "summary",
     database: Database = None,
 ) -> dict[str, object]:
     """Get detailed table structure: columns, types, defaults, nullability,
     primary keys, foreign keys (both directions), indexes, and check constraints.
     Call this before writing queries against a table to get correct column names,
-    types, and JOIN conditions.
+    types, and JOIN conditions. detail='full' adds the CREATE INDEX definitions;
+    detail='names' returns only the column names and primary keys.
     """
-    return await db(ctx, database).describe_table(table_name, schema)
+    return await db(ctx, database).describe_table(table_name, schema, detail)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -97,27 +104,37 @@ async def find_join_path(
 
 @mcp.tool(annotations=READ_ONLY)
 async def list_indexes(
-    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
+    ctx: Ctx,
+    schema: Schema = "public",
+    limit: ListLimit = 100,
+    detail: Detail = "summary",
+    database: Database = None,
 ) -> list[dict[str, object]]:
     """List all indexes across every table in the schema: name, table, type (btree/hash/gin/gist),
-    uniqueness, validity, full CREATE INDEX definition, size on disk, and usage stats
-    (scans, tuples read). is_valid=false means a failed CREATE INDEX CONCURRENTLY left an
-    invalid index that costs writes but serves no reads; drop or rebuild it.
+    uniqueness, validity, size on disk, and usage stats (scans, tuples read); detail='full'
+    adds the CREATE INDEX definition. is_valid=false means a failed CREATE INDEX
+    CONCURRENTLY left an invalid index that costs writes but serves no reads; drop or
+    rebuild it.
     Use this to audit indexing strategy across the whole schema — unlike describe_table which
     shows indexes for one table, this gives you the big picture. Combine with unused_indexes
     to find waste, or with explain_query to verify a query uses the index you expect.
     """
-    return await db(ctx, database).list_indexes(schema, limit)
+    return await db(ctx, database).list_indexes(schema, limit, detail)
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def list_functions(
-    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
+    ctx: Ctx,
+    schema: Schema = "public",
+    limit: ListLimit = 100,
+    detail: Detail = "summary",
+    database: Database = None,
 ) -> list[dict[str, object]]:
-    """List stored functions and procedures with their arguments, return type, language,
-    volatility, and source code. Use to understand what business logic lives in the database.
+    """List stored functions and procedures with their arguments, return type, language
+    and volatility; detail='full' adds the source code. Use to understand what business
+    logic lives in the database.
     """
-    return await db(ctx, database).list_functions(schema, limit)
+    return await db(ctx, database).list_functions(schema, limit, detail)
 
 
 @mcp.tool(annotations=READ_ONLY)

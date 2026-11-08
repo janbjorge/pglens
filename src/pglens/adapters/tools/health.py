@@ -1,7 +1,7 @@
 """Performance and health monitoring tools."""
 
 from pglens.adapters.mcp_adapter import READ_ONLY, Ctx, db, mcp
-from pglens.core.types import Database, ListLimit, Schema, TopQueries
+from pglens.core.types import Database, Detail, ListLimit, Schema, TopQueries
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -129,10 +129,14 @@ async def sequence_health(
 
 @mcp.tool(annotations=READ_ONLY)
 async def matview_status(
-    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
+    ctx: Ctx,
+    schema: Schema = "public",
+    limit: ListLimit = 100,
+    detail: Detail = "summary",
+    database: Database = None,
 ) -> list[dict[str, object]]:
-    """Show materialized views with their populated status, size, definition, and whether
-    they have a unique index (required for REFRESH CONCURRENTLY). Stale matviews return
-    outdated query results.
+    """Show materialized views with their populated status, size, and whether they have a
+    unique index (required for REFRESH CONCURRENTLY); detail='full' adds the definition.
+    Stale matviews return outdated query results.
     """
-    return await db(ctx, database).matview_status(schema, limit)
+    return await db(ctx, database).matview_status(schema, limit, detail)

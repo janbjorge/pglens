@@ -12,13 +12,13 @@ Rules
 
 ## Baseline
 
-| Metric | Value (2026-11-08, after items 1-4) |
+| Metric | Value (2026-11-08, after items 1-5) |
 |---|---|
 | Tools | 31 |
-| Tool-definition JSON, compact | 36,712 chars (about 9k tokens at 4 chars/token) |
-| Average per tool | 1,184 chars |
-| Largest tools | query 2,100, explain_query 1,682, find_join_path 1,481 |
-| Parameters with a `description` in the schema | 76 of 76 |
+| Tool-definition JSON, compact | 40,716 chars (about 10k tokens at 4 chars/token) |
+| Average per tool | 1,313 chars |
+| Largest tools | query 2,100, list_indexes 1,922, explain_query 1,682 |
+| Parameters with a `description` in the schema | 91 of 91 |
 | Tools with annotations | 31 of 31 |
 | Server `instructions` | 2,289 chars |
 | `query_guide` prompt | same text as the instructions |
@@ -46,29 +46,6 @@ EOF
 ```
 
 Token figures are chars/4 estimates, not tokenizer counts. Good enough to track direction.
-
-## 5. Put tool output on a diet
-
-Win: high. Effort: medium. All clients.
-
-Why
-- Tool definitions cost about 8k tokens once per session and are prompt-cached. Tool output is paid on every call and stays in context. `list_functions` selects `p.prosrc` for every function in the schema, `list_views` returns every view definition, `list_indexes` returns every index definition, and `describe_table` returns six sections.
-- Anthropic: use "pagination, range selection, filtering, and/or truncation" with sensible defaults, and treat every tool response as spend from a finite attention budget. https://www.anthropic.com/engineering/writing-tools-for-agents
-- Claude Code warns above 10,000 output tokens per call, caps at 25,000 by default (`MAX_MCP_OUTPUT_TOKENS`), and writes text results over 50,000 characters to a file unless the tool declares `_meta["anthropic/maxResultSizeChars"]`. https://code.claude.com/docs/en/mcp
-- DBHub's `search_objects` uses `detail_level` `names`, `summary`, `full` for the same reason. https://dbhub.ai/tools/search-objects.md
-
-Change
-- New alias `Detail = Literal["names", "summary", "full"]` in `core/types.py`, default `"summary"`. `names`: name and schema only. `summary`: today's row minus `source`, `definition`, `most_common_vals`. `full`: today's row. Apply to `list_functions`, `list_views`, `list_indexes`, `matview_status`, and to `describe_table` (`summary` skips `check_constraints` and index definitions). After item 7 these become parameters of `list_objects` and `describe_object`.
-
-Regression tests
-- `tests/test_asyncpg_adapter.py` with `make_record`: `list_functions(detail="summary")` rows have no `source`; `detail="full"` rows have it.
-- `tests/test_integration.py`: create one plpgsql function, call `list_functions` at all three detail levels, assert `source` only at `full`.
-
-Done when
-- Every list tool has `detail`.
-
-Docs
-- README: tool table rows for the affected tools.
 
 ## 6. Eval harness, prerequisite for item 7
 

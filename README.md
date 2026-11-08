@@ -32,16 +32,16 @@ pglens opens read-only connections (`default_transaction_read_only=on`), quotes 
 | `database_info` | Server version, database name, current user, encoding, timezone, uptime, size, configured database aliases |
 | `list_schemas` | Schemas with table and view counts |
 | `list_tables` | Tables with row counts and descriptions |
-| `list_views` | Views with their SQL definitions |
+| `list_views` | Views with descriptions; SQL definitions with `detail=full` |
 | `list_extensions` | Installed extensions and versions |
-| `describe_table` | Columns, types, PKs, FKs (both directions), indexes, check constraints |
+| `describe_table` | Columns, types, PKs, FKs (both directions), indexes, check constraints; `detail=full` adds index definitions, `detail=names` only column names and keys |
 | `find_join_path` | Multi-hop join paths between two tables via foreign keys |
-| `list_indexes` | All indexes across a schema with types, sizes, validity, and usage stats |
-| `list_functions` | Stored functions/procedures with source code |
+| `list_indexes` | All indexes across a schema with types, sizes, validity, and usage stats; definitions with `detail=full` |
+| `list_functions` | Stored functions/procedures; source code with `detail=full` |
 | `list_triggers` | Triggers on a table with definitions and status |
 | `list_policies` | Row-level security policies on a table |
 
-Schema-wide list tools (`list_tables`, `list_views`, `list_indexes`, `list_functions`, `search_columns`, `table_health`, `table_sizes`, `unused_indexes`, `sequence_health`, `matview_status`) take a `limit` argument: 100 rows by default, 1000 at most.
+Schema-wide list tools (`list_tables`, `list_views`, `list_indexes`, `list_functions`, `search_columns`, `table_health`, `table_sizes`, `unused_indexes`, `sequence_health`, `matview_status`) take a `limit` argument: 100 rows by default, 1000 at most. `list_views`, `list_indexes`, `list_functions`, `matview_status` and `describe_table` also take `detail`: `names` (identifiers only), `summary` (the default, without definitions and source code) or `full`.
 
 ### Data exploration
 
@@ -73,7 +73,7 @@ Schema-wide list tools (`list_tables`, `list_views`, `list_indexes`, `list_funct
 | `blocking_locks` | Lock wait chains (who blocks whom) |
 | `replication_status` | Standby lag, replication slots (inactive slots retain WAL), and subscription error/conflict counts |
 | `sequence_health` | Sequences approaching exhaustion |
-| `matview_status` | Materialized view freshness and refresh eligibility |
+| `matview_status` | Materialized view freshness and refresh eligibility; definitions with `detail=full` |
 | `io_stats` | Cluster-wide I/O from `pg_stat_io` by backend type, object, and context (PostgreSQL 16+; byte counts and WAL rows on 18+) |
 | `maintenance_progress` | Live progress of running VACUUM, ANALYZE, CREATE INDEX, and CLUSTER operations |
 

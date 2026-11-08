@@ -148,6 +148,18 @@ Buffers = Annotated[
     ),
 ]
 
+DetailLevel = Literal["names", "summary", "full"]
+
+Detail = Annotated[
+    DetailLevel,
+    Field(
+        description=(
+            "How much to return per row: names (identifiers only), summary (default; "
+            "everything except long definitions and source code) or full (everything)."
+        )
+    ),
+]
+
 ListLimit = Annotated[
     int,
     Field(
