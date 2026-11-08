@@ -30,7 +30,8 @@ class Databases:
         return self.databases[key]
 
     def names(self) -> list[str]:
-        return sorted(self.databases)
+        # The default alias first, then the rest in declaration order; sorted is stable.
+        return sorted(self.databases, key=lambda name: name != self.default_alias)
 
 
 Ctx = Context[Databases, object]
