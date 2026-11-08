@@ -274,6 +274,7 @@ uvx pglens --transport streamable-http
 ## Safety
 
 - Every connection sets `default_transaction_read_only=on`, so the server itself refuses writes. User-influenced queries also run inside explicit `readonly=True` transactions.
+- Every tool is declared read-only through MCP tool annotations (`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`). Clients that honor them can run pglens calls in parallel or without a confirmation prompt. Annotations are hints; the read-only transactions are the enforcement.
 - pglens parses SQL for `query` and `explain_query` with PostgreSQL's own parser (via pglast) and accepts only a single SELECT statement. It rejects `SELECT INTO`, data-modifying CTEs like `WITH x AS (DELETE ...)`, and multi-statement input before anything reaches the database.
 - The same validation rejects parameter placeholders (`$1`, `$2`). Inline literal values instead.
 - A statement timeout (`PGLENS_STATEMENT_TIMEOUT`, default 60 s) bounds every query, so a runaway `COUNT(*)` or `EXPLAIN ANALYZE` cannot hog the server.

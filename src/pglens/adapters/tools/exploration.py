@@ -1,6 +1,6 @@
 """Data exploration tools — sample data, column values, search."""
 
-from pglens.adapters.mcp_adapter import Ctx, db, mcp
+from pglens.adapters.mcp_adapter import READ_ONLY, Ctx, db, mcp
 from pglens.core.types import (
     ColumnKeyword,
     ColumnName,
@@ -14,7 +14,7 @@ from pglens.core.types import (
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def sample_rows(
     ctx: Ctx,
     table_name: TableName,
@@ -28,7 +28,7 @@ async def sample_rows(
     return await db(ctx, database).sample_rows(table_name, n, schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def column_values(
     ctx: Ctx,
     table_name: TableName,
@@ -44,7 +44,7 @@ async def column_values(
     return await db(ctx, database).column_values(table_name, column_name, top_n, schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def column_stats(
     ctx: Ctx,
     table_name: TableName,
@@ -60,7 +60,7 @@ async def column_stats(
     return await db(ctx, database).column_stats(table_name, column_name, schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def search_data(
     ctx: Ctx,
     table_name: TableName,
@@ -74,7 +74,7 @@ async def search_data(
     return await db(ctx, database).search_data(table_name, keyword, schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def search_columns(
     ctx: Ctx,
     keyword: ColumnKeyword,
@@ -87,7 +87,7 @@ async def search_columns(
     return await db(ctx, database).search_columns(keyword, schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def search_enum_values(
     ctx: Ctx, keyword: EnumKeyword = "", database: Database = None
 ) -> list[dict[str, object]]:

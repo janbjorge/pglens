@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import asyncpg
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import ToolAnnotations
 
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
 from pglens.core.settings import DEFAULT_DB, Settings
@@ -106,6 +107,16 @@ than expected.
 """
 
 mcp = MCPServer("pglens", instructions=INSTRUCTIONS, lifespan=app_lifespan)
+
+# Every pglens tool reads and never writes. Clients that honor these hints
+# run read-only calls in parallel or skip confirmation prompts; the read-only
+# transactions in AsyncpgDatabase are the enforcement.
+READ_ONLY = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
 
 
 def db(ctx: Ctx, database: str | None = None) -> AsyncpgDatabase:

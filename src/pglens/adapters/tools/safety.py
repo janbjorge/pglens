@@ -1,10 +1,10 @@
 """Safety tools — dependency analysis before DDL changes."""
 
-from pglens.adapters.mcp_adapter import Ctx, db, mcp
+from pglens.adapters.mcp_adapter import READ_ONLY, Ctx, db, mcp
 from pglens.core.types import Database, ObjectName, ObjectType, Schema
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def object_dependencies(
     ctx: Ctx,
     object_name: ObjectName,

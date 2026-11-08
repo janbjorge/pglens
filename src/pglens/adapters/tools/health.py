@@ -1,10 +1,10 @@
 """Performance and health monitoring tools."""
 
-from pglens.adapters.mcp_adapter import Ctx, db, mcp
+from pglens.adapters.mcp_adapter import READ_ONLY, Ctx, db, mcp
 from pglens.core.types import Database, Schema, TopQueries
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def table_health(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
@@ -19,7 +19,7 @@ async def table_health(
     return await db(ctx, database).table_health(schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def table_sizes(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
@@ -29,7 +29,7 @@ async def table_sizes(
     return await db(ctx, database).table_sizes(schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def unused_indexes(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
@@ -42,7 +42,7 @@ async def unused_indexes(
     return await db(ctx, database).unused_indexes(schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def slow_queries(
     ctx: Ctx, limit: TopQueries = 20, database: Database = None
 ) -> list[dict[str, object]]:
@@ -57,7 +57,7 @@ async def slow_queries(
     return await db(ctx, database).slow_queries(limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def replication_status(ctx: Ctx, database: Database = None) -> dict[str, object]:
     """Show replication health: connected standbys from pg_stat_replication (state,
     sync_state, write/flush/replay lag) and replication slots from pg_replication_slots
@@ -71,7 +71,7 @@ async def replication_status(ctx: Ctx, database: Database = None) -> dict[str, o
     return await db(ctx, database).replication_status()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def io_stats(ctx: Ctx, database: Database = None) -> list[dict[str, object]]:
     """Cluster-wide I/O statistics from pg_stat_io (PostgreSQL 16+): reads, writes,
     extends, hits, evictions, reuses, fsyncs and their timings, broken down by
@@ -86,7 +86,7 @@ async def io_stats(ctx: Ctx, database: Database = None) -> list[dict[str, object
     return await db(ctx, database).io_stats()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def maintenance_progress(ctx: Ctx, database: Database = None) -> dict[str, object]:
     """Live progress of maintenance operations currently running: VACUUM
     (pg_stat_progress_vacuum), ANALYZE (pg_stat_progress_analyze), CREATE INDEX /
@@ -100,7 +100,7 @@ async def maintenance_progress(ctx: Ctx, database: Database = None) -> dict[str,
     return await db(ctx, database).maintenance_progress()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def active_queries(ctx: Ctx, database: Database = None) -> list[dict[str, object]]:
     """Show all current database sessions with their queries, durations, and wait events.
     Use this to see what is running right now and identify long-running or stuck queries.
@@ -108,7 +108,7 @@ async def active_queries(ctx: Ctx, database: Database = None) -> list[dict[str, 
     return await db(ctx, database).active_queries()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def blocking_locks(ctx: Ctx, database: Database = None) -> list[dict[str, object]]:
     """Show lock wait chains: which sessions are blocked and which sessions are blocking them.
     Use this when queries are hanging or the application reports timeouts.
@@ -116,7 +116,7 @@ async def blocking_locks(ctx: Ctx, database: Database = None) -> list[dict[str, 
     return await db(ctx, database).blocking_locks()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def sequence_health(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
@@ -127,7 +127,7 @@ async def sequence_health(
     return await db(ctx, database).sequence_health(schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def matview_status(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
