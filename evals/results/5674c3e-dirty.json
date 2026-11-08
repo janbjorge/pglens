@@ -1,0 +1,476 @@
+{
+  "git_sha": "5674c3e",
+  "dirty": true,
+  "ran_at": "2026-11-08T12:26:35+00:00",
+  "model": "claude-opus-5-5",
+  "claude_version": "2.1.312 (Claude Code)",
+  "tasks": 21,
+  "passed": 21,
+  "tool_calls": 38,
+  "unexpected_tool_picks": 13,
+  "builtin_calls": 10,
+  "input_tokens": 824042,
+  "output_tokens": 9676,
+  "cache_read_tokens": 719528,
+  "cost_usd": 1.173,
+  "outcomes": [
+    {
+      "name": "distinct_status_values",
+      "passed": true,
+      "tool_calls": [
+        "query"
+      ],
+      "unexpected_tools": [],
+      "missing_tools": [
+        "column_values"
+      ],
+      "builtin_calls": [],
+      "num_turns": 2,
+      "input_tokens": 25762,
+      "output_tokens": 327,
+      "cache_read_tokens": 21464,
+      "cost_usd": 0.0452008,
+      "duration_ms": 5133,
+      "is_error": false,
+      "answer": "`orders.status` has three distinct values, and each one appears on exactly one order:\n\n| status | orders |\n|---|---|\n| pending | 1 |\n| confirmed | 1 |\n| shipped | 1 |\n\nThat's 3 orders in total, counted with `SELECT status, count(*) FROM orders GROUP BY 1`. No orders have a NULL status. If you expected more orders, row-level security policies might be hiding some rows from this connection. I haven't checked for that."
+    },
+    {
+      "name": "two_hop_join",
+      "passed": true,
+      "tool_calls": [
+        "list_tables",
+        "describe_table",
+        "describe_table",
+        "describe_table",
+        "describe_table",
+        "query"
+      ],
+      "unexpected_tools": [
+        "list_tables"
+      ],
+      "missing_tools": [
+        "find_join_path"
+      ],
+      "builtin_calls": [],
+      "num_turns": 7,
+      "input_tokens": 53843,
+      "output_tokens": 609,
+      "cache_read_tokens": 48453,
+      "cost_usd": 0.06495859999999999,
+      "duration_ms": 9630,
+      "is_error": false,
+      "answer": "Only one user has an order containing the product named Widget: **alice**.\n\nI found this by tracing each order through its line items to the product name. Searching for any product with \"widget\" in its name returned only \"Widget\", and no other user has an order that includes it."
+    },
+    {
+      "name": "three_hop_join",
+      "passed": true,
+      "tool_calls": [
+        "list_tables",
+        "describe_table",
+        "describe_table",
+        "query"
+      ],
+      "unexpected_tools": [
+        "list_tables"
+      ],
+      "missing_tools": [
+        "find_join_path"
+      ],
+      "builtin_calls": [],
+      "num_turns": 5,
+      "input_tokens": 54596,
+      "output_tokens": 402,
+      "cache_read_tokens": 48811,
+      "cost_usd": 0.0640502,
+      "duration_ms": 7829,
+      "is_error": false,
+      "answer": "Alice has paid a total of **52.47**, across two payments.\n\n| Payment ID | Order ID | Amount |\n|---|---|---|\n| 1 | 1 | 29.97 |\n| 2 | 2 | 22.50 |\n\nI found these by linking alice's account in `users` to her orders in `orders`, then to the payments on those orders in `payments`."
+    },
+    {
+      "name": "references_to_users",
+      "passed": true,
+      "tool_calls": [
+        "describe_table"
+      ],
+      "unexpected_tools": [],
+      "missing_tools": [],
+      "builtin_calls": [],
+      "num_turns": 2,
+      "input_tokens": 26142,
+      "output_tokens": 151,
+      "cache_read_tokens": 21454,
+      "cost_usd": 0.0447988,
+      "duration_ms": 2903,
+      "is_error": false,
+      "answer": "Two tables have a foreign key that references `public.users`:\n\n- **`orders`**: `orders.user_id` \u2192 `users.id`\n- **`tickets`**: `tickets.user_id` \u2192 `users.id`\n\nThis comes from the foreign keys listed for `users` in the `public` schema."
+    },
+    {
+      "name": "query_plan",
+      "passed": true,
+      "tool_calls": [
+        "explain_query"
+      ],
+      "unexpected_tools": [],
+      "missing_tools": [],
+      "builtin_calls": [
+        "ToolSearch"
+      ],
+      "num_turns": 3,
+      "input_tokens": 40003,
+      "output_tokens": 450,
+      "cache_read_tokens": 35006,
+      "cost_usd": 0.0559532,
+      "duration_ms": 6606,
+      "is_error": false,
+      "answer": "The planner chose a **sequential scan** (`Seq Scan`) for this query.\n\nHere is the plan from `EXPLAIN` (I didn't use `ANALYZE`, so the query wasn't actually run):\n\n```\nSeq Scan on users  (cost=0.00..1.04 rows=1 width=56)\n  Filter: (id = 1)\n```\n\nIt reads the whole `users` table and keeps only rows where `id = 1`. The estimated total cost is 1.04, which suggests the table is very small, probably a single page. I didn't check whether `id` has an index. Even if it does, PostgreSQL normally picks a sequential scan on a table this small because it's cheaper than using the index."
+    },
+    {
+      "name": "unused_index",
+      "passed": true,
+      "tool_calls": [
+        "query",
+        "query"
+      ],
+      "unexpected_tools": [
+        "query"
+      ],
+      "missing_tools": [
+        "unused_indexes"
+      ],
+      "builtin_calls": [],
+      "num_turns": 3,
+      "input_tokens": 26593,
+      "output_tokens": 978,
+      "cache_read_tokens": 21456,
+      "cost_usd": 0.0649312,
+      "duration_ms": 9474,
+      "is_error": false,
+      "answer": " statistics started being collected. A crash or restore can also wipe the counts, so check how long this database has been running before acting on the list.\n\nSeven of the nine are primary keys or unique constraints. They enforce data rules even when no query reads them, so they aren't candidates for removal. **`idx_users_bio`** is the only ordinary index on the list, so it's the only one that looks safe to drop. `order_summary_user_id_idx` is also unique, and `order_summary` may be a materialized view. If it is, a unique index is required for `REFRESH MATERIALIZED VIEW CONCURRENTLY`, so leave it in place.\n\n**Answer:** `api_keys_pkey`, `customers_pkey`, `order_items_pkey`, `order_summary_user_id_idx`, `payments_pkey`, `tickets_pkey`, `idx_users_bio`, `users_username_key`, `warehouses_pkey`"
+    },
+    {
+      "name": "largest_table",
+      "passed": true,
+      "tool_calls": [
+        "query"
+      ],
+      "unexpected_tools": [
+        "query"
+      ],
+      "missing_tools": [
+        "table_sizes"
+      ],
+      "builtin_calls": [],
+      "num_turns": 2,
+      "input_tokens": 26147,
+      "output_tokens": 505,
+      "cache_read_tokens": 21474,
+      "cost_usd": 0.0517628,
+      "duration_ms": 5554,
+      "is_error": false,
+      "answer": "**`public.users`** uses the most disk: **64 kB (65,536 bytes)** in total. That includes 8 kB of table data and 48 kB of indexes, with TOAST and other storage making up the rest.\n\nI got this from `pg_total_relation_size` across all tables and materialized views in `public`. The next largest tables are `customers`, `warehouses`, `shipping_regions` and `tickets`, at 32 kB each. Every table here is very small, so the gap between them is only a few pages. If a table were split into partitions, each partition would be counted on its own rather than added together under the parent."
+    },
+    {
+      "name": "blocking_locks",
+      "passed": true,
+      "tool_calls": [
+        "blocking_locks"
+      ],
+      "unexpected_tools": [],
+      "missing_tools": [],
+      "builtin_calls": [
+        "ToolSearch"
+      ],
+      "num_turns": 3,
+      "input_tokens": 39182,
+      "output_tokens": 249,
+      "cache_read_tokens": 34600,
+      "cost_usd": 0.048532,
+      "duration_ms": 4378,
+      "is_error": false,
+      "answer": "No. The `blocking_locks` check on the primary database found no sessions waiting on a lock and none blocking others.\n\nThis only shows the moment the check ran, and I only checked the primary database. If you're seeing hangs or timeouts now and then, I can run it again while one is happening."
+    },
+    {
+      "name": "configured_databases",
+      "passed": true,
+      "tool_calls": [
+        "database_info"
+      ],
+      "unexpected_tools": [],
+      "missing_tools": [],
+      "builtin_calls": [
+        "ToolSearch"
+      ],
+      "num_turns": 3,
+      "input_tokens": 39731,
+      "output_tokens": 189,
+      "cache_read_tokens": 34780,
+      "cost_usd": 0.05032,
+      "duration_ms": 3943,
+      "is_error": false,
+      "answer": "The pglens server has just one database alias set up, `pglens_eval`. Because it's the only one, it's also the default. It's running **PostgreSQL major version 18** (exact version 18.6, a Debian build)."
+    },
+    {
+      "name": "enum_values",
+      "passed": true,
+      "tool_calls": [
+        "query"
+      ],
+      "unexpected_tools": [
+        "query"
+      ],
+      "missing_tools": [
+        "search_enum_values"
+      ],
+      "builtin_calls": [],
+      "num_turns": 2,
+      "input_tokens": 25943,
+      "output_tokens": 237,
+      "cache_read_tokens": 21446,
+      "cost_usd": 0.04498919999999999,
+      "duration_ms": 3201,
+      "is_error": false,
+      "answer": "I checked the system catalogs. The `public.order_status` enum has four values, in sort order:\n\n1. `pending`\n2. `confirmed`\n3. `shipped`\n4. `delivered`"
+    },
+    {
+      "name": "mixed_case_filter",
+      "passed": true,
+      "tool_calls": [
+        "list_tables",
+        "column_values",
+        "query"
+      ],
+      "unexpected_tools": [
+        "list_tables"
+      ],
+      "missing_tools": [],
+      "builtin_calls": [],
+      "num_turns": 4,
+      "input_tokens": 52924,
+      "output_tokens": 396,
+      "cache_read_tokens": 48024,
+      "cost_usd": 0.0566928,
+      "duration_ms": 6353,
+      "is_error": false,
+      "answer": "**3 tickets are currently open.**\n\nThe `tickets` table has 5 rows. Their `status` values are `OPEN`, `Open`, `open`, `CLOSED` and `closed`, one row each. I counted the open ones with `lower(trim(status)) = 'open'`, so differences in capitalisation and any extra spaces don't affect the count. That gives 3 open and 2 closed."
+    },
+    {
+      "name": "find_email_columns",
+      "passed": true,
+      "tool_calls": [
+        "query"
+      ],
+      "unexpected_tools": [
+        "query"
+      ],
+      "missing_tools": [
+        "search_columns"
+      ],
+      "builtin_calls": [],
+      "num_turns": 2,
+      "input_tokens": 25805,
+      "output_tokens": 226,
+      "cache_read_tokens": 21452,
+      "cost_usd": 0.043618399999999995,
+      "duration_ms": 3752,
+      "is_error": false,
+      "answer": "I checked `information_schema.columns` for the public schema. Two tables have a column named exactly `email`:\n\n- **customers**\n- **users**\n\nBoth are regular tables, and no views have a column with that name. This only matches the exact name `email`, so columns like `contact_email` would not show up."
+    },
+    {
+      "name": "exact_count",
+      "passed": true,
+      "tool_calls": [
+        "query",
+        "list_policies"
+      ],
+      "unexpected_tools": [
+        "list_policies"
+      ],
+      "missing_tools": [],
+      "builtin_calls": [
+        "ToolSearch"
+      ],
+      "num_turns": 4,
+      "input_tokens": 52903,
+      "output_tokens": 355,
+      "cache_read_tokens": 47930,
+      "cost_usd": 0.056438,
+      "duration_ms": 5662,
+      "is_error": false,
+      "answer": "The `order_items` table contains exactly **3 rows**. I got this by running `SELECT count(*) FROM order_items` directly against the table, not from the planner's estimate. The table has no row-level security policies, so no rows were hidden from the count."
+    },
+    {
+      "name": "function_source",
+      "passed": true,
+      "tool_calls": [
+        "query",
+        "query",
+        "describe_table"
+      ],
+      "unexpected_tools": [
+        "describe_table",
+        "query"
+      ],
+      "missing_tools": [
+        "list_functions"
+      ],
+      "builtin_calls": [],
+      "num_turns": 4,
+      "input_tokens": 53010,
+      "output_tokens": 787,
+      "cache_read_tokens": 48027,
+      "cost_usd": 0.0651774,
+      "duration_ms": 11772,
+      "is_error": false,
+      "answer": "sn't set a \"modified\" column. This is the line that does it:\n\n```sql\nBEGIN NEW.created_at = now(); RETURN NEW; END;\n```\n\nThe only trigger that uses it is `trg_orders_modified` on `public.orders`, which runs `BEFORE UPDATE ... FOR EACH ROW`.\n\n**What this means:** every time a row in `orders` is updated, its `created_at` is reset to the time of the update, so the original creation time is lost. The `orders` table has only `id`, `user_id`, `status` and `created_at`, with no `updated_at` or `modified_at` column. My guess is that the function was meant to track modification time but writes to the wrong column. That would be a bug, and nothing in the schema confirms what was intended.\n\n**Answer:** on every update to an `orders` row, it sets `created_at` to `now()`, via `NEW.created_at = now();`."
+    },
+    {
+      "name": "triggers_on_orders",
+      "passed": true,
+      "tool_calls": [
+        "list_triggers"
+      ],
+      "unexpected_tools": [],
+      "missing_tools": [],
+      "builtin_calls": [
+        "ToolSearch"
+      ],
+      "num_turns": 3,
+      "input_tokens": 39571,
+      "output_tokens": 370,
+      "cache_read_tokens": 34740,
+      "cost_usd": 0.052972000000000005,
+      "duration_ms": 5147,
+      "is_error": false,
+      "answer": "The `public.orders` table has one trigger, and it calls `update_modified_column()`.\n\n| Trigger | When it fires | Function | Status |\n|---|---|---|---|\n| `trg_orders_modified` | `BEFORE UPDATE`, once for each row | `update_modified_column()` | enabled |\n\nDefinition:\n```sql\nCREATE TRIGGER trg_orders_modified BEFORE UPDATE ON public.orders\nFOR EACH ROW EXECUTE FUNCTION update_modified_column()\n```\n\nI didn't look at the function's code. Its name suggests it sets a \"last modified\" timestamp when a row is updated, but that's a guess."
+    },
+    {
+      "name": "rls_policies",
+      "passed": true,
+      "tool_calls": [
+        "list_policies"
+      ],
+      "unexpected_tools": [],
+      "missing_tools": [],
+      "builtin_calls": [
+        "ToolSearch"
+      ],
+      "num_turns": 3,
+      "input_tokens": 39630,
+      "output_tokens": 566,
+      "cache_read_tokens": 34769,
+      "cost_usd": 0.0571378,
+      "duration_ms": 9792,
+      "is_error": false,
+      "answer": "r_id', true)::integer`. A user only sees orders whose `user_id` matches the session setting `app.current_user_id`.\n  - **WITH CHECK:** none.\n  - **Roles:** the tool returned an empty roles list. I take that to mean the policy applies to all roles (PUBLIC), but that's my reading, not something the tool stated.\n\nThings to watch for:\n- **Forced RLS is off.** The table owner, superusers and roles with `BYPASSRLS` skip the policy and see every row.\n- **No other commands are covered.** There are no `INSERT`, `UPDATE` or `DELETE` policies. With RLS on, a role that isn't exempt can't do those operations on any row, even if it has the table privileges.\n- **Unset setting hides everything.** If `app.current_user_id` isn't set, `current_setting(..., true)` returns NULL and that session sees no orders."
+    },
+    {
+      "name": "view_definition",
+      "passed": true,
+      "tool_calls": [
+        "list_views"
+      ],
+      "unexpected_tools": [],
+      "missing_tools": [],
+      "builtin_calls": [
+        "ToolSearch"
+      ],
+      "num_turns": 3,
+      "input_tokens": 39798,
+      "output_tokens": 367,
+      "cache_read_tokens": 34857,
+      "cost_usd": 0.0538154,
+      "duration_ms": 5692,
+      "is_error": false,
+      "answer": "I pulled the `active_orders` view definition from the database (it has no description set):\n\n```sql\nSELECT o.id,\n       o.user_id,\n       u.username,\n       o.status,\n       o.created_at\nFROM orders o\nJOIN users u ON o.user_id = u.id\nWHERE o.status <> 'delivered'::order_status;\n```\n\n**It excludes only the `delivered` status.** Every other `order_status` value stays in the view, which probably includes cancelled orders. I haven't checked which values that enum contains.\n\nBecause it uses an inner join to `users`, the view also leaves out any order whose `user_id` doesn't match a user. That includes orders where `user_id` is NULL."
+    },
+    {
+      "name": "sequence_exhaustion",
+      "passed": true,
+      "tool_calls": [
+        "sequence_health",
+        "query"
+      ],
+      "unexpected_tools": [
+        "query"
+      ],
+      "missing_tools": [],
+      "builtin_calls": [
+        "ToolSearch"
+      ],
+      "num_turns": 4,
+      "input_tokens": 54602,
+      "output_tokens": 671,
+      "cache_read_tokens": 48906,
+      "cost_usd": 0.0687372,
+      "duration_ms": 8640,
+      "is_error": false,
+      "answer": "countdown` is the sequence closest to running out.** It has about 1,000 values left. All the other sequences have about 2.1 billion left.\n\nThe health check lists every sequence as 0.00% consumed, but that figure is wrong for `countdown`. It counts down instead of up, and the check only works for sequences that count up.\n\n| Sequence | Last value | Step | Limit | Values left |\n|---|---|---|---|---|\n| **countdown** | 1000 (already used) | \u22121 | 0 | **1,000** (999 down to 0) |\n| tickets_id_seq | 5 | +1 | 2,147,483,647 | ~2.1 billion |\n| users/products/orders_id_seq | 3 | +1 | 2,147,483,647 | ~2.1 billion |\n| others | 1\u20132 | +1 | 2,147,483,647 | ~2.1 billion |\n\n`countdown` doesn't wrap around when it hits its limit. After about 1,000 more calls to `nextval`, the next call will fail with an error."
+    },
+    {
+      "name": "matview_concurrent_refresh",
+      "passed": true,
+      "tool_calls": [
+        "matview_status",
+        "query"
+      ],
+      "unexpected_tools": [
+        "query"
+      ],
+      "missing_tools": [],
+      "builtin_calls": [
+        "ToolSearch"
+      ],
+      "num_turns": 4,
+      "input_tokens": 41703,
+      "output_tokens": 840,
+      "cache_read_tokens": 35612,
+      "cost_usd": 0.07262640000000001,
+      "duration_ms": 11597,
+      "is_error": false,
+      "answer": "id_idx` is defined as `CREATE UNIQUE INDEX order_summary_user_id_idx ON public.order_summary USING btree (user_id)`. PostgreSQL requires a unique index on plain columns, not expressions, with no `WHERE` clause. This index is valid, unique, built on a plain column and not partial.\n2. **It is already populated** (`ispopulated = true`). A concurrent refresh doesn't work on a view that has never been populated.\n\nThe index also fits the view's data. The view groups by `u.id, u.username` and selects `u.id AS user_id`, so there is one row per user and `user_id` is unique.\n\nA concurrent refresh lets reads continue during the refresh. It is usually slower than a normal refresh because it compares the old and new results to work out which rows changed. Only one refresh of the view can run at a time."
+    },
+    {
+      "name": "dependencies_before_drop",
+      "passed": true,
+      "tool_calls": [
+        "object_dependencies",
+        "describe_table"
+      ],
+      "unexpected_tools": [
+        "describe_table"
+      ],
+      "missing_tools": [],
+      "builtin_calls": [
+        "ToolSearch"
+      ],
+      "num_turns": 4,
+      "input_tokens": 40408,
+      "output_tokens": 743,
+      "cache_read_tokens": 34817,
+      "cost_usd": 0.0665274,
+      "duration_ms": 11194,
+      "is_error": false,
+      "answer": "ets.user_id` \u2192 `users.id` | Same as above, for `tickets`. |\n| View | `public.active_orders` | The view is dropped. Anything that queries it breaks. |\n| Materialized view | `public.order_summary` | The materialized view is dropped, along with its stored data. Refreshes and queries against it break. |\n\n**Objects dropped along with the table:**\n- Sequence `users_id_seq`, which supplies the default for `users.id`.\n- Indexes `users_pkey`, `users_username_key` and `idx_users_bio`.\n\n**Not checked:** this list comes from PostgreSQL's dependency catalog. It doesn't track tables named only inside function bodies (PL/pgSQL or SQL functions), dynamic SQL, or application code. Any functions or app queries that use `users` would only fail when they run. I can search the function definitions if you want."
+    },
+    {
+      "name": "sample_shape",
+      "passed": true,
+      "tool_calls": [
+        "query"
+      ],
+      "unexpected_tools": [],
+      "missing_tools": [
+        "sample_rows"
+      ],
+      "builtin_calls": [],
+      "num_turns": 2,
+      "input_tokens": 25746,
+      "output_tokens": 258,
+      "cache_read_tokens": 21450,
+      "cost_usd": 0.043802,
+      "duration_ms": 5497,
+      "is_error": false,
+      "answer": "Here's one row from the `products` table. I ran `SELECT * FROM products LIMIT 1`, so this is just the first row returned, not a random sample.\n\n| id | name | price | category |\n|----|------|-------|----------|\n| 1 | Widget | 9.99 | gadgets |\n\nThe table has four columns: `id`, `name`, `price` and `category`. The query result shows `price` as the string `\"9.99\"`, which usually means a `numeric`/decimal column, but I haven't checked the actual column types."
+    }
+  ]
+}
