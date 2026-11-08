@@ -57,10 +57,7 @@ HealthLimit = Annotated[
     Field(
         ge=1,
         le=100,
-        description=(
-            "Rows per check (1-100): the top statements for slow_queries, the largest or "
-            "most at-risk objects for the other checks."
-        ),
+        description="Rows per check (1-100); io ignores it and returns every row.",
     ),
 ]
 
