@@ -1,7 +1,7 @@
 """Drive claude -p through evals/tasks.json against a seeded PostgreSQL and record
 which pglens tools it picks, what it spends, and whether it lands the answer.
 
-Run by hand, never in CI: every task costs API tokens. See evals/README.md.
+Run by hand, never in CI: every task costs API tokens. See docs/evaluation.md.
 """
 
 from __future__ import annotations
