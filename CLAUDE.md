@@ -64,9 +64,13 @@ Six modules under `src/pglens/`, no subpackages.
 - **Tool registration**: `tools.py` registers tools as a decorator side effect at import time. `pglens/__init__.py` imports it, and Python runs a package's `__init__` before any of its submodules, so every import path ends with a registered server. Keep `server.py` free of imports from `tools.py`.
 - **Testing**: Unit tests mock the asyncpg pool/connection using `make_record(**kwargs)`. Integration tests run against a real PostgreSQL via testcontainers (requires Docker). Tests use `pytest-asyncio` with `asyncio_mode="auto"` and session-scoped event loops.
 
+## Decided against
+
+Code Mode sandbox tool (a JavaScript or Python `execute(code)` tool). SQL already is the code and PostgreSQL under `default_transaction_read_only=on`, `statement_timeout`, `lock_timeout` and `idle_in_transaction_session_timeout` already is the sandbox. Cloudflare: client-side Code Mode "requires the agent to ship with secure sandbox access" and "solves context costs for a single API" (https://blog.cloudflare.com/code-mode-mcp/). Anthropic: "Running agent-generated code requires a secure execution environment with appropriate sandboxing" (https://www.anthropic.com/engineering/code-execution-with-mcp). A sandbox adds attack surface and buys no context, because tool search already defers definitions on Claude clients and the nine-tool surface keeps them small everywhere else. Revisit only if `evals/run.py` shows the model chaining five or more catalogue calls that one script would replace.
+
 ## Important
 
-- Open work on the MCP surface is tracked in `TODO.md`, ranked by win with refs and required regression tests. Delete an item when it merges; never mark it done. Re-run the baseline script there after each merge.
+- `TODO.md` holds open work on the MCP surface and is empty when nothing is planned. An item carries its refs and the regression tests it ships with; delete it when it merges, never mark it done. After a change to the tool surface, re-run the baseline script in `evals/README.md` and update its table.
 - Keep `README.md` up to date when making user-facing changes (new tools, config changes, usage changes).
 - Python 3.11+ required. Strict mypy enabled.
 - Linting (`ruff check`, `ruff format --check`) and type checking (`ty check`) currently pass — keep them green.
