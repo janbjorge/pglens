@@ -70,7 +70,6 @@ Code Mode sandbox tool (a JavaScript or Python `execute(code)` tool). SQL alread
 
 ## Important
 
-- `TODO.md` holds open work on the MCP surface and is empty when nothing is planned. An item carries its refs and the regression tests it ships with; delete it when it merges, never mark it done. After a change to the tool surface, re-run the baseline script in `docs/evaluation.md` and update its table.
 - Keep `README.md` up to date when making user-facing changes (new tools, config changes, usage changes).
 - Python 3.11+ required. Strict mypy enabled.
 - Linting (`ruff check`, `ruff format --check`) and type checking (`ty check`) currently pass. Keep them green.
