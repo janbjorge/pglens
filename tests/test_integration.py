@@ -58,6 +58,9 @@ class TestSchemaDiscovery:
         users = next(t for t in tables if t["table_name"] == "users")
         assert users["description"] == "Application users"
 
+    async def test_list_tables_limit(self, db: AsyncpgDatabase) -> None:
+        assert len(await db.list_tables("public", limit=2)) == 2
+
     async def test_list_views(self, db: AsyncpgDatabase) -> None:
         views = await db.list_views("public")
         names = [v["view_name"] for v in views]
@@ -245,6 +248,9 @@ class TestDataExploration:
         result = await db.search_columns("email", "public")
         assert len(result) >= 1
         assert any(r["table_name"] == "users" and r["column_name"] == "email" for r in result)
+
+    async def test_search_columns_limit(self, db: AsyncpgDatabase) -> None:
+        assert len(await db.search_columns("id", "public", limit=1)) == 1
 
     async def test_search_enum_values(self, db: AsyncpgDatabase) -> None:
         result = await db.search_enum_values("order_status")

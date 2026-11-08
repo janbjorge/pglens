@@ -41,6 +41,8 @@ pglens opens read-only connections (`default_transaction_read_only=on`), quotes 
 | `list_triggers` | Triggers on a table with definitions and status |
 | `list_policies` | Row-level security policies on a table |
 
+Schema-wide list tools (`list_tables`, `list_views`, `list_indexes`, `list_functions`, `search_columns`, `table_health`, `table_sizes`, `unused_indexes`, `sequence_health`, `matview_status`) take a `limit` argument: 100 rows by default, 1000 at most.
+
 ### Data exploration
 
 | Tool | What it does |

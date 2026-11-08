@@ -225,6 +225,8 @@ class TestToolSchemas:
             ("find_join_path", "max_depth", 1, 6),
             ("query", "limit", 1, 500),
             ("query", "offset", 0, None),
+            ("list_tables", "limit", 1, 1000),
+            ("search_columns", "limit", 1, 1000),
         ],
     )
     async def test_ranges_are_in_schema(

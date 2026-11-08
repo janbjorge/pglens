@@ -59,14 +59,13 @@ Why
 
 Change
 - New alias `Detail = Literal["names", "summary", "full"]` in `core/types.py`, default `"summary"`. `names`: name and schema only. `summary`: today's row minus `source`, `definition`, `most_common_vals`. `full`: today's row. Apply to `list_functions`, `list_views`, `list_indexes`, `matview_status`, and to `describe_table` (`summary` skips `check_constraints` and index definitions). After item 7 these become parameters of `list_objects` and `describe_object`.
-- New alias `ListLimit = Annotated[int, Field(ge=1, le=1000, description=...)]`, default 100, on the schema-wide list tools. Pass it as a bind parameter (`LIMIT $2`), never by string formatting.
 
 Regression tests
-- `tests/test_asyncpg_adapter.py` with `make_record`: `list_functions(detail="summary")` rows have no `source`; `detail="full"` rows have it; `limit` appears as `LIMIT $2` in the SQL text and the value is passed.
+- `tests/test_asyncpg_adapter.py` with `make_record`: `list_functions(detail="summary")` rows have no `source`; `detail="full"` rows have it.
 - `tests/test_integration.py`: create one plpgsql function, call `list_functions` at all three detail levels, assert `source` only at `full`.
 
 Done when
-- Every list tool has `detail` and `limit`.
+- Every list tool has `detail`.
 
 Docs
 - README: tool table rows for the affected tools.

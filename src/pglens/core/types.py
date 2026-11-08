@@ -148,6 +148,18 @@ Buffers = Annotated[
     ),
 ]
 
+ListLimit = Annotated[
+    int,
+    Field(
+        ge=1,
+        le=1000,
+        description=(
+            "Maximum number of rows to return (1-1000, default 100). If exactly this many "
+            "rows come back, more may exist: raise the limit or narrow the question."
+        ),
+    ),
+]
+
 Limit = Annotated[
     int,
     Field(ge=1, le=500, description="Maximum number of rows to return (1-500, default 500)"),
