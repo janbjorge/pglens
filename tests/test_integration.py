@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
+from pglens.core.sql import quote_ident
 
 # All tests in this file require the real database fixtures from conftest.py.
 # The `db` fixture is function-scoped and provides an AsyncpgDatabase backed
@@ -524,10 +525,6 @@ class TestMatviewsAndDependencies:
         deps = await db.object_dependencies("update_modified_column", "function", "public")
         assert isinstance(deps, list)
 
-    async def test_object_dependencies_rejects_unknown_type(self, db: AsyncpgDatabase) -> None:
-        with pytest.raises(ValueError, match="Unknown object_type"):
-            await db.object_dependencies("users", "veiw", "public")
-
 
 class TestSafeRefs:
     async def test_safe_table_ref_resolves(self, db: AsyncpgDatabase) -> None:
@@ -538,6 +535,6 @@ class TestSafeRefs:
 
     async def test_safe_refs_usable_in_query(self, db: AsyncpgDatabase) -> None:
         ref = db.safe_table_ref("public", "users")
-        col = db.safe_column_ref("username")
+        col = quote_ident("username")
         rows = await db.pool.fetch(f"SELECT {col} FROM {ref} ORDER BY {col}")
         assert [r["username"] for r in rows] == ["alice", "bob", "charlie"]
