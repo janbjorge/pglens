@@ -12,6 +12,19 @@ from pglens.types import DetailLevel
 # describe_object kinds that live in pg_class, mapped to relkind.
 RELKIND = {"table": "r", "view": "v", "matview": "m", "sequence": "S", "index": "i"}
 
+# (result key, progress view, extra select list) for maintenance_progress. The views
+# gain columns with each release, so they are read whole rather than column by column.
+PROGRESS_VIEWS = (
+    ("vacuum", "pg_stat_progress_vacuum", ""),
+    ("analyze", "pg_stat_progress_analyze", ""),
+    (
+        "create_index",
+        "pg_stat_progress_create_index",
+        "p.index_relid::regclass::text AS index_name, ",
+    ),
+    ("cluster", "pg_stat_progress_cluster", ""),
+)
+
 # One row per column pair of every foreign key, composite keys included. Callers
 # prepend the SELECT list and append conditions on the referencing side (ns1, cl1,
 # a1) or the referenced side (ns2, cl2, a2).
@@ -521,122 +534,51 @@ class AsyncpgDatabase:
     async def object_dependencies(
         self, object_name: str, object_type: str, schema: str
     ) -> list[dict[str, object]]:
+        """Objects that would break or be dropped with the target, by type and identity.
+
+        pg_identify_object() names each dependent. A view reaches its base tables
+        through its _RETURN rule, so pg_rewrite rows are mapped back to the view.
+        Normal dependencies are other objects; auto dependencies are the target's
+        own parts (indexes, constraints, triggers, defaults) and are skipped, except
+        owned sequences and partitions, which go with the table.
+        """
         if object_type == "function":
-            return await self._fetch(
+            targets = await self._fetch(
                 """
-                WITH target AS (
-                    SELECT p.oid FROM pg_proc p
-                    JOIN pg_namespace n ON p.pronamespace = n.oid
-                    WHERE p.proname = $1 AND n.nspname = $2
-                )
-                SELECT DISTINCT
-                    dep_ns.nspname AS dependent_schema,
-                    dep_cl.relname AS dependent_name,
-                    CASE dep_cl.relkind
-                        WHEN 'r' THEN 'table'
-                        WHEN 'v' THEN 'view'
-                        WHEN 'm' THEN 'matview'
-                        WHEN 'S' THEN 'sequence'
-                        WHEN 'i' THEN 'index'
-                        ELSE dep_cl.relkind::text
-                    END AS dependent_type
-                FROM pg_depend d
-                JOIN target t ON d.refobjid = t.oid
-                JOIN pg_class dep_cl ON d.objid = dep_cl.oid
-                JOIN pg_namespace dep_ns ON dep_cl.relnamespace = dep_ns.oid
-                WHERE d.deptype IN ('n', 'a')
-                    AND d.classid = 'pg_class'::regclass
-                ORDER BY dependent_type, dependent_name
+                SELECT p.oid FROM pg_proc p
+                JOIN pg_namespace n ON p.pronamespace = n.oid
+                WHERE p.proname = $1 AND n.nspname = $2
                 """,
                 object_name,
                 schema,
             )
-        return await self._fetch(
-            """
-            WITH target AS (
-                SELECT c.oid
-                FROM pg_class c
+        else:
+            targets = await self._fetch(
+                """
+                SELECT c.oid FROM pg_class c
                 JOIN pg_namespace n ON c.relnamespace = n.oid
                 WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind::text = $3
+                """,
+                object_name,
+                schema,
+                RELKIND[object_type],
             )
-            SELECT DISTINCT
-                CASE d.classid
-                    WHEN 'pg_class'::regclass THEN
-                        CASE dep_cl.relkind
-                            WHEN 'r' THEN 'table'
-                            WHEN 'v' THEN 'view'
-                            WHEN 'm' THEN 'matview'
-                            WHEN 'S' THEN 'sequence'
-                            WHEN 'i' THEN 'index'
-                            ELSE dep_cl.relkind::text
-                        END
-                    WHEN 'pg_proc'::regclass THEN 'function'
-                    WHEN 'pg_constraint'::regclass THEN 'constraint'
-                    WHEN 'pg_attrdef'::regclass THEN 'column default'
-                    WHEN 'pg_rewrite'::regclass THEN
-                        CASE rw_cl.relkind
-                            WHEN 'v' THEN 'view'
-                            WHEN 'm' THEN 'matview'
-                            ELSE 'rule'
-                        END
-                    ELSE d.classid::regclass::text
-                END AS dependent_type,
-                CASE d.classid
-                    WHEN 'pg_class'::regclass THEN dep_cl.relname
-                    WHEN 'pg_proc'::regclass THEN dep_proc.proname
-                    WHEN 'pg_constraint'::regclass THEN dep_con.conname
-                    WHEN 'pg_attrdef'::regclass
-                        THEN ad_cl.relname || '.' || ad_att.attname
-                    WHEN 'pg_rewrite'::regclass
-                        THEN coalesce(rw_cl.relname, dep_rw.rulename)
-                    ELSE d.objid::text
-                END AS dependent_name,
-                CASE d.classid
-                    WHEN 'pg_class'::regclass THEN dep_ns.nspname
-                    WHEN 'pg_proc'::regclass THEN proc_ns.nspname
-                    WHEN 'pg_constraint'::regclass THEN con_ns.nspname
-                    WHEN 'pg_attrdef'::regclass THEN ad_ns.nspname
-                    WHEN 'pg_rewrite'::regclass THEN rw_ns.nspname
-                    ELSE NULL
-                END AS dependent_schema
+        return await self._fetch(
+            """
+            SELECT DISTINCT obj.type AS dependent_type, obj.identity AS dependent
             FROM pg_depend d
-            JOIN target t ON d.refobjid = t.oid
-            LEFT JOIN pg_class dep_cl ON d.classid = 'pg_class'::regclass
-                AND d.objid = dep_cl.oid
-            LEFT JOIN pg_namespace dep_ns ON dep_cl.relnamespace = dep_ns.oid
-            LEFT JOIN pg_index dep_ix ON dep_cl.relkind = 'i'
-                AND dep_ix.indexrelid = dep_cl.oid
-            LEFT JOIN pg_proc dep_proc ON d.classid = 'pg_proc'::regclass
-                AND d.objid = dep_proc.oid
-            LEFT JOIN pg_namespace proc_ns ON dep_proc.pronamespace = proc_ns.oid
-            LEFT JOIN pg_constraint dep_con ON d.classid = 'pg_constraint'::regclass
-                AND d.objid = dep_con.oid
-            LEFT JOIN pg_namespace con_ns ON dep_con.connamespace = con_ns.oid
-            LEFT JOIN pg_attrdef dep_ad ON d.classid = 'pg_attrdef'::regclass
-                AND d.objid = dep_ad.oid
-            LEFT JOIN pg_class ad_cl ON dep_ad.adrelid = ad_cl.oid
-            LEFT JOIN pg_namespace ad_ns ON ad_cl.relnamespace = ad_ns.oid
-            LEFT JOIN pg_attribute ad_att ON ad_att.attrelid = dep_ad.adrelid
-                AND ad_att.attnum = dep_ad.adnum
-            LEFT JOIN pg_rewrite dep_rw ON d.classid = 'pg_rewrite'::regclass
-                AND d.objid = dep_rw.oid
-            LEFT JOIN pg_class rw_cl ON dep_rw.ev_class = rw_cl.oid
-            LEFT JOIN pg_namespace rw_ns ON rw_cl.relnamespace = rw_ns.oid
-            WHERE d.deptype IN ('n', 'a')
-                AND d.objid != t.oid
-                -- the target's own indexes are part of it, not dependents
-                AND dep_ix.indrelid IS DISTINCT FROM t.oid
-                -- the target's own constraints (PK, unique, check) likewise
-                AND dep_con.conrelid IS DISTINCT FROM t.oid
-                -- the target's own column defaults likewise
-                AND dep_ad.adrelid IS DISTINCT FROM t.oid
-                -- a view's own _RETURN rule depends on the view itself
-                AND dep_rw.ev_class IS DISTINCT FROM t.oid
-            ORDER BY dependent_type, dependent_name
+            LEFT JOIN pg_rewrite rw ON d.classid = 'pg_rewrite'::regclass AND d.objid = rw.oid
+            CROSS JOIN LATERAL pg_identify_object(
+                CASE WHEN rw.oid IS NULL THEN d.classid ELSE 'pg_class'::regclass END,
+                coalesce(rw.ev_class, d.objid),
+                0
+            ) AS obj
+            WHERE d.refobjid = ANY($1::oid[])
+                AND coalesce(rw.ev_class, d.objid) <> ALL($1::oid[])
+                AND (d.deptype = 'n' OR (d.deptype = 'a' AND obj.type IN ('table', 'sequence')))
+            ORDER BY 1, 2
             """,
-            object_name,
-            schema,
-            RELKIND[object_type],
+            [row["oid"] for row in targets],
         )
 
     async def find_join_path(
@@ -901,42 +843,14 @@ class AsyncpgDatabase:
                     f"(connected server is {version // 10000})."
                 }
             ]
-        # PG18: byte counters alongside the operation counts.
-        pg18_columns = (
-            """
-                read_bytes,
-                write_bytes,
-                extend_bytes,
-            """
-            if version >= 180000
-            else ""
-        )
+        # Whole rows: PostgreSQL 18 added byte counters, later releases will add more.
         return await self._fetch(
-            f"""
-            SELECT
-                backend_type,
-                object,
-                context,
-                reads,
-                round(read_time::numeric, 1) AS read_time_ms,
-                writes,
-                round(write_time::numeric, 1) AS write_time_ms,
-                writebacks,
-                round(writeback_time::numeric, 1) AS writeback_time_ms,
-                extends,
-                round(extend_time::numeric, 1) AS extend_time_ms,
-                {pg18_columns}
-                hits,
-                evictions,
-                reuses,
-                fsyncs,
-                round(fsync_time::numeric, 1) AS fsync_time_ms,
-                stats_reset
+            """
+            SELECT *
             FROM pg_stat_io
-            WHERE coalesce(reads, 0) <> 0 OR coalesce(writes, 0) <> 0
-               OR coalesce(extends, 0) <> 0 OR coalesce(hits, 0) <> 0
-               OR coalesce(evictions, 0) <> 0 OR coalesce(reuses, 0) <> 0
-               OR coalesce(fsyncs, 0) <> 0 OR coalesce(writebacks, 0) <> 0
+            WHERE coalesce(reads, 0) + coalesce(writes, 0) + coalesce(extends, 0)
+                + coalesce(hits, 0) + coalesce(evictions, 0) + coalesce(reuses, 0)
+                + coalesce(fsyncs, 0) + coalesce(writebacks, 0) <> 0
             ORDER BY backend_type, object, context
             """
         )
@@ -1044,123 +958,17 @@ class AsyncpgDatabase:
         )
 
     async def maintenance_progress(self) -> dict[str, object]:
-        version = await self._get_server_version_num()
-        pg17_vacuum_columns = (
-            """
-                p.indexes_total,
-                p.indexes_processed,
-            """
-            if version >= 170000
-            else ""
-        )
-        # PG18: cumulative cost-based delay sleep (needs track_cost_delay_timing).
-        delay_column = (
-            """
-                round(p.delay_time::numeric, 1) AS delay_time_ms,
-            """
-            if version >= 180000
-            else ""
-        )
-        vacuum = await self._fetch(
-            f"""
-            SELECT
-                p.pid,
-                n.nspname AS schema,
-                c.relname AS table_name,
-                p.phase,
-                p.heap_blks_total,
-                p.heap_blks_scanned,
-                CASE WHEN p.heap_blks_total > 0
-                    THEN round(100.0 * p.heap_blks_scanned / p.heap_blks_total, 1)
-                END AS scanned_pct,
-                p.heap_blks_vacuumed,
-                {pg17_vacuum_columns}
-                {delay_column}
-                p.index_vacuum_count
-            FROM pg_stat_progress_vacuum p
-            LEFT JOIN pg_class c ON c.oid = p.relid
-            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-            ORDER BY p.pid
-            """
-        )
-        analyze = await self._fetch(
-            f"""
-            SELECT
-                p.pid,
-                n.nspname AS schema,
-                c.relname AS table_name,
-                p.phase,
-                p.sample_blks_total,
-                p.sample_blks_scanned,
-                CASE WHEN p.sample_blks_total > 0
-                    THEN round(100.0 * p.sample_blks_scanned / p.sample_blks_total, 1)
-                END AS scanned_pct,
-                p.ext_stats_total,
-                p.ext_stats_computed,
-                {delay_column}
-                p.child_tables_total,
-                p.child_tables_done
-            FROM pg_stat_progress_analyze p
-            LEFT JOIN pg_class c ON c.oid = p.relid
-            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-            ORDER BY p.pid
-            """
-        )
-        create_index = await self._fetch(
-            """
-            SELECT
-                p.pid,
-                n.nspname AS schema,
-                c.relname AS table_name,
-                ci.relname AS index_name,
-                p.command,
-                p.phase,
-                p.lockers_total,
-                p.lockers_done,
-                p.current_locker_pid,
-                p.blocks_total,
-                p.blocks_done,
-                CASE WHEN p.blocks_total > 0
-                    THEN round(100.0 * p.blocks_done / p.blocks_total, 1)
-                END AS blocks_pct,
-                p.tuples_total,
-                p.tuples_done,
-                p.partitions_total,
-                p.partitions_done
-            FROM pg_stat_progress_create_index p
-            LEFT JOIN pg_class c ON c.oid = p.relid
-            LEFT JOIN pg_class ci ON ci.oid = p.index_relid
-            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-            ORDER BY p.pid
-            """
-        )
-        cluster = await self._fetch(
-            """
-            SELECT
-                p.pid,
-                n.nspname AS schema,
-                c.relname AS table_name,
-                p.command,
-                p.phase,
-                p.heap_blks_total,
-                p.heap_blks_scanned,
-                CASE WHEN p.heap_blks_total > 0
-                    THEN round(100.0 * p.heap_blks_scanned / p.heap_blks_total, 1)
-                END AS scanned_pct,
-                p.heap_tuples_scanned,
-                p.heap_tuples_written,
-                p.index_rebuild_count
-            FROM pg_stat_progress_cluster p
-            LEFT JOIN pg_class c ON c.oid = p.relid
-            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-            ORDER BY p.pid
-            """
-        )
         return {
-            "vacuum": vacuum,
-            "analyze": analyze,
-            "create_index": create_index,
-            "cluster": cluster,
+            key: await self._fetch(
+                f"""
+                SELECT n.nspname AS schema, c.relname AS table_name, {extra}p.*
+                FROM {view} p
+                LEFT JOIN pg_class c ON c.oid = p.relid
+                LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+                ORDER BY p.pid
+                """
+            )
+            for key, view, extra in PROGRESS_VIEWS
         }
 
     async def replication_status(self) -> dict[str, object]:
@@ -1201,34 +1009,11 @@ class AsyncpgDatabase:
             ORDER BY slot_name
             """
         )
-        version = await self._get_server_version_num()
         subscriptions: list[dict[str, object]] = []
-        if version >= 150000:
-            # PG18: per-type logical replication conflict counters.
-            conflict_columns = (
-                """
-                confl_insert_exists,
-                confl_update_origin_differs,
-                confl_update_exists,
-                confl_update_missing,
-                confl_delete_origin_differs,
-                confl_delete_missing,
-                confl_multiple_unique_conflicts,
-                """
-                if version >= 180000
-                else ""
-            )
+        if await self._get_server_version_num() >= 150000:
+            # Whole rows: PostgreSQL 18 added per-type conflict counters.
             subscriptions = await self._fetch(
-                f"""
-                SELECT
-                    subname,
-                    apply_error_count,
-                    sync_error_count,
-                    {conflict_columns}
-                    stats_reset
-                FROM pg_stat_subscription_stats
-                ORDER BY subname
-                """
+                "SELECT * FROM pg_stat_subscription_stats ORDER BY subname"
             )
         return {
             "in_recovery": in_recovery,
