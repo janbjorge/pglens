@@ -1,6 +1,6 @@
 """Schema and discovery tools."""
 
-from pglens.adapters.mcp_adapter import Ctx, databases, db, mcp
+from pglens.adapters.mcp_adapter import READ_ONLY, Ctx, databases, db, mcp
 from pglens.core.types import (
     Database,
     MaxDepth,
@@ -11,7 +11,7 @@ from pglens.core.types import (
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def database_info(ctx: Ctx, database: Database = None) -> dict[str, object]:
     """Get PostgreSQL server and database identity: version, database name, current user,
     encoding, timezone, max_connections, uptime, total database size, and the configured
@@ -26,7 +26,7 @@ async def database_info(ctx: Ctx, database: Database = None) -> dict[str, object
     return info
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_schemas(ctx: Ctx, database: Database = None) -> list[dict[str, object]]:
     """List all user-visible schemas with table and view counts.
     Call this first to discover non-public schemas before exploring tables.
@@ -34,7 +34,7 @@ async def list_schemas(ctx: Ctx, database: Database = None) -> list[dict[str, ob
     return await db(ctx, database).list_schemas()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_tables(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
@@ -44,7 +44,7 @@ async def list_tables(
     return await db(ctx, database).list_tables(schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_views(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
@@ -54,7 +54,7 @@ async def list_views(
     return await db(ctx, database).list_views(schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_extensions(ctx: Ctx, database: Database = None) -> list[dict[str, object]]:
     """List installed Postgres extensions and versions.
     Check this before using extension-specific functions like PostGIS or pg_trgm.
@@ -62,7 +62,7 @@ async def list_extensions(ctx: Ctx, database: Database = None) -> list[dict[str,
     return await db(ctx, database).list_extensions()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def describe_table(
     ctx: Ctx,
     table_name: TableName,
@@ -77,7 +77,7 @@ async def describe_table(
     return await db(ctx, database).describe_table(table_name, schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def find_join_path(
     ctx: Ctx,
     source_table: SourceTable,
@@ -94,7 +94,7 @@ async def find_join_path(
     return await db(ctx, database).find_join_path(source_table, target_table, schema, max_depth)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_indexes(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
@@ -109,7 +109,7 @@ async def list_indexes(
     return await db(ctx, database).list_indexes(schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_functions(
     ctx: Ctx, schema: Schema = "public", database: Database = None
 ) -> list[dict[str, object]]:
@@ -119,7 +119,7 @@ async def list_functions(
     return await db(ctx, database).list_functions(schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_triggers(
     ctx: Ctx,
     table_name: TableName,
@@ -132,7 +132,7 @@ async def list_triggers(
     return await db(ctx, database).list_triggers(table_name, schema)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_policies(
     ctx: Ctx,
     table_name: TableName,

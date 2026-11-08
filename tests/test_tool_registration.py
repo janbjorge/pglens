@@ -10,6 +10,7 @@ import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from mcp.types import ListToolsResult
 
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
 from pglens.adapters.mcp_adapter import mcp, query_guide
@@ -272,3 +273,23 @@ class TestServerInstructions:
         named = set(re.findall(r"`([a-z_]+)`", mcp.instructions))
         unknown = named - _registered_tool_names()
         assert not unknown, f"Instructions name tools that do not exist: {unknown}"
+
+
+class TestToolAnnotations:
+    """Every tool is read-only, and clients must be told so in the tools/list response."""
+
+    async def test_every_tool_is_annotated_read_only(self) -> None:
+        for tool in await mcp.list_tools():
+            assert tool.annotations is not None, f"{tool.name} has no annotations"
+            assert tool.annotations.read_only_hint is True, tool.name
+            assert tool.annotations.destructive_hint is False, tool.name
+            assert tool.annotations.idempotent_hint is True, tool.name
+            assert tool.annotations.open_world_hint is False, tool.name
+
+    async def test_read_only_hint_survives_serialization(self) -> None:
+        """The wire form of tools/list carries the camelCase readOnlyHint."""
+        payload = ListToolsResult(tools=await mcp.list_tools()).model_dump(
+            by_alias=True, exclude_none=True
+        )
+        hints = {tool["name"]: tool["annotations"]["readOnlyHint"] for tool in payload["tools"]}
+        assert hints and all(hints.values()), hints

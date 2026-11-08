@@ -12,14 +12,14 @@ Rules
 
 ## Baseline
 
-| Metric | Value (2026-11-08, after items 1-2) |
+| Metric | Value (2026-11-08, after items 1-3) |
 |---|---|
 | Tools | 31 |
 | Tool-definition JSON, compact | 32,996 chars (about 8k tokens at 4 chars/token) |
 | Average per tool | 1,064 chars |
 | Largest tools | query 1,770, explain_query 1,578, find_join_path 1,377 |
 | Parameters with a `description` in the schema | 76 of 76 |
-| Tools with annotations | 0 |
+| Tools with annotations | 31 of 31 |
 | Server `instructions` | 2,289 chars |
 | `query_guide` prompt | same text as the instructions |
 
@@ -46,30 +46,6 @@ EOF
 ```
 
 Token figures are chars/4 estimates, not tokenizer counts. Good enough to track direction.
-
-## 3. Annotate every tool as read-only
-
-Win: medium. Effort: small. Claude Code, VS Code, Codex CLI, claude.ai.
-
-Why
-- No tool sets `annotations`. The spec hints are `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`. https://modelcontextprotocol.io/specification/2025-11-25/server/tools
-- Claude Code: "`readOnlyHint`: the tool changes nothing. Claude Code also runs the tool's calls in parallel with other read-only calls." Plan mode treats an MCP tool as read-only only when it carries `readOnlyHint: true`. https://code.claude.com/docs/en/mcp
-- VS Code Copilot and Codex CLI skip the confirmation prompt for read-only tools; claude.ai groups `readOnlyHint: true` plus `destructiveHint: false` tools for one-click approval. https://blog.marcnuri.com/mcp-tool-annotations-introduction
-- Limits: Claude Code's normal permission engine ignores the hints (allowlist still needed), https://github.com/anthropics/claude-code/issues/87452. The spec says clients treat annotations as untrusted. Enforcement stays where it is: `default_transaction_read_only=on` plus `transaction(readonly=True)`.
-
-Change
-- In `mcp_adapter.py`: `from mcp.types import ToolAnnotations` and `READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)`.
-- Every decorator in `src/pglens/adapters/tools/*.py` becomes `@mcp.tool(annotations=READ_ONLY)`. `explain_query(analyze=True)` executes the statement but inside a read-only transaction, so it stays read-only. mcp 2.0.0 `MCPServer.tool` accepts `annotations`; verified.
-
-Regression tests (`tests/test_tool_registration.py`)
-- `test_every_tool_is_annotated_read_only`: for every tool, `tool.annotations.read_only_hint is True`, `destructive_hint is False`, `idempotent_hint is True`, `open_world_hint is False`.
-- In `tests/test_mcp_request_path.py`: the `tools/list` response carries `annotations.readOnlyHint == true` for at least one tool, proving the hint survives serialization.
-
-Done when
-- Baseline script shows `annotations=True` on every row.
-
-Docs
-- README Safety: one bullet. Every tool is declared read-only via MCP annotations; clients that honor them can run pglens calls in parallel or without confirmation. Annotations are hints; the read-only transactions are the enforcement.
 
 ## 4. Mark the core tools to load upfront in Claude Code
 
