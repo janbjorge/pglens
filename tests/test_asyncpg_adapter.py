@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase, select_detail, truncate_cell
+from pglens.adapters.asyncpg_adapter import (
+    AsyncpgDatabase,
+    like_pattern,
+    select_detail,
+    truncate_cell,
+)
 from pglens.core.sql import validate_select
 
 
@@ -50,18 +55,20 @@ def db(pool: AsyncMock) -> AsyncpgDatabase:
     return AsyncpgDatabase(pool=pool)
 
 
+class TestLikePattern:
+    def test_escapes_wildcards_and_backslashes(self) -> None:
+        assert like_pattern("100%_x\\") == "100\\%\\_x\\\\"
+
+    def test_plain_keyword_is_unchanged(self) -> None:
+        assert like_pattern("email") == "email"
+
+
 class TestSafeRefs:
     def test_safe_table_ref(self, db: AsyncpgDatabase) -> None:
         assert db.safe_table_ref("public", "orders") == '"public"."orders"'
 
     def test_safe_table_ref_escapes_embedded_quotes(self, db: AsyncpgDatabase) -> None:
         assert db.safe_table_ref('sch"ema', 'ta"ble') == '"sch""ema"."ta""ble"'
-
-    def test_safe_column_ref(self, db: AsyncpgDatabase) -> None:
-        assert db.safe_column_ref("status") == '"status"'
-
-    def test_safe_column_ref_escapes_embedded_quotes(self, db: AsyncpgDatabase) -> None:
-        assert db.safe_column_ref('col"umn') == '"col""umn"'
 
 
 class TestDatabaseInfo:
@@ -231,14 +238,6 @@ class TestSlowQueries:
         result = await db.slow_queries(20)
         assert len(result) == 1
         assert result[0]["calls"] == 100
-
-    async def test_limit_is_clamped(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
-        pool.fetchval.return_value = True
-        pool.fetch.return_value = []
-        await db.slow_queries(5000)
-        assert pool.fetch.call_args[0][1] == 100
-        await db.slow_queries(0)
-        assert pool.fetch.call_args[0][1] == 1
 
     async def test_pg18_extension_schema_adds_columns(
         self, db: AsyncpgDatabase, pool: AsyncMock
@@ -421,25 +420,17 @@ class TestListMethods:
 
 
 class TestColumnValues:
-    async def test_column_values_clamps_top_n(self) -> None:
+    async def test_column_values_binds_top_n(self) -> None:
         conn = mock_conn(fetch_return=[make_record(value="active", frequency=42)])
         pool = mock_pool_with_conn(conn)
         db = AsyncpgDatabase(pool=pool)
 
-        result = await db.column_values("orders", "status", 200, "public")
+        result = await db.column_values("orders", "status", 20, "public")
 
-        assert conn.fetch.call_args[0][1] == 100
+        sql = conn.fetch.call_args[0][0]
+        assert '"status"::text AS value' in sql and 'FROM "public"."orders"' in sql
+        assert conn.fetch.call_args[0][1] == 20
         assert result == [{"value": "active", "frequency": 42}]
-
-    @pytest.mark.parametrize("top_n", [0, -5])
-    async def test_column_values_clamps_low_top_n_to_1(self, top_n: int) -> None:
-        conn = mock_conn()
-        pool = mock_pool_with_conn(conn)
-        db = AsyncpgDatabase(pool=pool)
-
-        await db.column_values("orders", "status", top_n, "public")
-
-        assert conn.fetch.call_args[0][1] == 1
 
 
 class TestDescribeTable:
@@ -505,17 +496,6 @@ class TestQueryAndExplain:
 
         assert conn.fetch.call_args[0][1] == 100
         assert conn.fetch.call_args[0][2] == 50
-
-    async def test_query_clamps_limit(self) -> None:
-        conn = mock_conn(fetch_return=[])
-        pool = mock_pool_with_conn(conn)
-        db = AsyncpgDatabase(pool=pool)
-
-        await db.query("SELECT 1", limit=9999)
-        assert conn.fetch.call_args[0][1] == 500
-
-        await db.query("SELECT 1", limit=-5)
-        assert conn.fetch.call_args[0][1] == 1
 
     async def test_explain_returns_plan_text(self) -> None:
         conn = mock_conn(
@@ -708,7 +688,18 @@ class TestColumnStats:
         assert "error" in result
 
     async def test_column_stats_returns_combined(self) -> None:
-        conn = mock_conn()
+        # summary query via conn inside a readonly transaction
+        conn = mock_conn(
+            fetch_return=[
+                make_record(
+                    min_value="10",
+                    max_value="9999",
+                    total_rows=1000,
+                    non_null_count=950,
+                    null_count=50,
+                )
+            ]
+        )
         pool = mock_pool_with_conn(conn)
         # pg_stats query
         pool.fetchrow.return_value = make_record(
@@ -717,14 +708,6 @@ class TestColumnStats:
             most_common_vals="{100,200,300}",
             most_common_freqs="{0.3,0.2,0.1}",
             correlation=0.95,
-        )
-        # summary query via conn inside readonly transaction
-        conn.fetchrow.return_value = make_record(
-            min_value="10",
-            max_value="9999",
-            total_rows=1000,
-            non_null_count=950,
-            null_count=50,
         )
         db = AsyncpgDatabase(pool=pool)
         result = await db.column_stats("orders", "total", "public")
@@ -782,12 +765,6 @@ class TestFindJoinPath:
         assert len(two_hop) >= 1
         assert two_hop[0]["tables"] == ["users", "orders", "order_items"]
 
-    async def test_find_join_path_clamps_depth(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
-        pool.fetch.return_value = []
-        result = await db.find_join_path("a", "b", "public", 99)
-        # Should not error — max_depth clamped to 6
-        assert result["paths_found"] == 0
-
 
 class TestCellTruncation:
     """One wide text or json column must not flood the model's context."""
@@ -826,7 +803,7 @@ class TestCellTruncation:
 
 
 class TestListLimit:
-    """Schema-wide list methods bind the row limit as a parameter and clamp it to 1-1000."""
+    """Schema-wide list methods bind the row limit as a parameter."""
 
     @pytest.mark.parametrize(
         ("call", "position"),
@@ -860,14 +837,6 @@ class TestListLimit:
         pool.fetch.return_value = []
         await db.list_tables("public")
         assert pool.fetch.call_args[0][2] == 100
-
-    @pytest.mark.parametrize(("requested", "bound"), [(5000, 1000), (0, 1), (-3, 1)])
-    async def test_limit_is_clamped(
-        self, db: AsyncpgDatabase, pool: AsyncMock, requested: int, bound: int
-    ) -> None:
-        pool.fetch.return_value = []
-        await db.list_tables("public", limit=requested)
-        assert pool.fetch.call_args[0][2] == bound
 
 
 class TestDetailLevels:

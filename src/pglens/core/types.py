@@ -4,8 +4,8 @@ Every alias is ``Annotated[T, Field(...)]``. The mcp SDK builds each tool's
 input schema from pydantic ``FieldInfo`` metadata only, so a bare string inside
 ``Annotated`` is silently dropped and never reaches the client. Descriptions,
 ``enum`` values (from ``Literal``) and ``ge``/``le`` ranges declared here are what
-the model sees when it picks arguments. Range limits mirror the clamps in
-``AsyncpgDatabase``, which stay in place as defense in depth.
+the model sees when it picks arguments. The SDK rejects out-of-range arguments
+before a tool runs, so ``AsyncpgDatabase`` trusts the values it is given.
 """
 
 from typing import Annotated, Literal

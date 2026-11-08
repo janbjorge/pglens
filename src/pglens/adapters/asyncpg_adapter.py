@@ -9,6 +9,27 @@ import asyncpg
 from pglens.core.sql import quote_ident, validate_select
 from pglens.core.types import DetailLevel
 
+# describe_object kinds that live in pg_class, mapped to relkind.
+RELKIND = {"table": "r", "view": "v", "matview": "m", "sequence": "S", "index": "i"}
+
+# One row per column pair of every foreign key, composite keys included. Callers
+# prepend the SELECT list and append conditions on the referencing side (ns1, cl1,
+# a1) or the referenced side (ns2, cl2, a2).
+FOREIGN_KEY_PAIRS = """
+    FROM pg_constraint con
+    JOIN pg_class cl1 ON con.conrelid = cl1.oid
+    JOIN pg_namespace ns1 ON cl1.relnamespace = ns1.oid
+    JOIN pg_class cl2 ON con.confrelid = cl2.oid
+    JOIN pg_namespace ns2 ON cl2.relnamespace = ns2.oid
+    CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
+        WITH ORDINALITY AS u(local_attnum, foreign_attnum, ord)
+    JOIN pg_attribute a1
+        ON a1.attrelid = con.conrelid AND a1.attnum = u.local_attnum
+    JOIN pg_attribute a2
+        ON a2.attrelid = con.confrelid AND a2.attnum = u.foreign_attnum
+    WHERE con.contype = 'f'
+"""
+
 
 def truncate_cell(value: object, max_chars: int) -> object:
     """Cut a text cell longer than max_chars and mark it with its full length.
@@ -41,23 +62,9 @@ def select_detail(
             return rows
 
 
-def object_type_to_relkind(object_type: str) -> str:
-    match object_type:
-        case "table":
-            return "r"
-        case "view":
-            return "v"
-        case "matview":
-            return "m"
-        case "sequence":
-            return "S"
-        case "index":
-            return "i"
-        case _:
-            raise ValueError(
-                f"Unknown object_type {object_type!r}. Expected one of: "
-                "'table', 'view', 'matview', 'function', 'sequence', 'index'"
-            )
+def like_pattern(keyword: str) -> str:
+    """Escape LIKE wildcards so keyword matches literally inside '%' || $n || '%'."""
+    return keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 @dataclass
@@ -76,18 +83,21 @@ class AsyncpgDatabase:
             )
         return self.server_version_num
 
+    async def _fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
+        """Run a catalogue query: fixed SQL text, values bound as parameters."""
+        return [dict(r) for r in await self.pool.fetch(sql, *args)]
+
+    async def _fetch_user(self, sql: str, *args: object) -> list[dict[str, object]]:
+        """Run SQL that carries user input (quoted identifiers or a validated SELECT).
+
+        The pool already sets default_transaction_read_only=on; the explicit
+        read-only transaction is the second lock on the door.
+        """
+        async with self.pool.acquire() as conn, conn.transaction(readonly=True):
+            return [dict(r) for r in await conn.fetch(sql, *args)]
+
     def safe_table_ref(self, schema: str, table_name: str) -> str:
         return f"{quote_ident(schema)}.{quote_ident(table_name)}"
-
-    def safe_column_ref(self, column_name: str) -> str:
-        return quote_ident(column_name)
-
-    def _rows(self, records: list[asyncpg.Record]) -> list[dict[str, object]]:
-        """Convert user-data records to dicts, cutting text cells to max_cell_chars."""
-        return [
-            {key: truncate_cell(value, self.max_cell_chars) for key, value in dict(r).items()}
-            for r in records
-        ]
 
     async def database_info(self) -> dict[str, object]:
         row = await self.pool.fetchrow(
@@ -108,137 +118,273 @@ class AsyncpgDatabase:
         )
         return dict(row) if row else {}
 
-    async def list_indexes(
-        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
-    ) -> list[dict[str, object]]:
-        rows = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    i.relname AS index_name,
-                    t.relname AS table_name,
-                    ix.indisunique AS is_unique,
-                    ix.indisprimary AS is_primary,
-                    am.amname AS index_type,
-                    pg_get_indexdef(ix.indexrelid) AS definition,
-                    ix.indisvalid AS is_valid,
-                    pg_size_pretty(pg_relation_size(ix.indexrelid)) AS index_size,
-                    pg_relation_size(ix.indexrelid) AS index_size_bytes,
-                    s.idx_scan AS scans_since_reset,
-                    s.idx_tup_read AS tuples_read,
-                    s.idx_tup_fetch AS tuples_fetched
-                FROM pg_index ix
-                JOIN pg_class i ON i.oid = ix.indexrelid
-                JOIN pg_class t ON t.oid = ix.indrelid
-                JOIN pg_namespace n ON t.relnamespace = n.oid
-                JOIN pg_am am ON i.relam = am.oid
-                LEFT JOIN pg_stat_user_indexes s
-                    ON s.indexrelid = ix.indexrelid
-                WHERE n.nspname = $1
-                ORDER BY t.relname, i.relname
-                LIMIT $2
-                """,
-                schema,
-                min(max(limit, 1), 1000),
-            )
-        ]
-        return select_detail(
-            rows, detail, names=("index_name", "table_name"), heavy=("definition",)
+    async def list_schemas(self) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                n.nspname AS schema_name,
+                pg_catalog.pg_get_userbyid(n.nspowner) AS owner,
+                obj_description(n.oid) AS description,
+                count(c.oid) FILTER (WHERE c.relkind = 'r') AS table_count,
+                count(c.oid) FILTER (WHERE c.relkind = 'v') AS view_count
+            FROM pg_namespace n
+            LEFT JOIN pg_class c ON c.relnamespace = n.oid
+                AND c.relkind IN ('r', 'v')
+            WHERE n.nspname NOT LIKE 'pg_%'
+                AND n.nspname != 'information_schema'
+            GROUP BY n.nspname, n.nspowner, n.oid
+            ORDER BY n.nspname
+            """
         )
 
+    async def list_extensions(self) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT extname, extversion, obj_description(e.oid, 'pg_extension') AS description
+            FROM pg_extension e
+            ORDER BY extname
+            """
+        )
+
+    # -- Catalogue listings, one schema at a time --
+
     async def list_tables(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    t.table_name,
-                    obj_description((quote_ident(t.table_schema) || '.' ||
-                        quote_ident(t.table_name))::regclass) AS description,
-                    s.n_live_tup AS estimated_row_count
-                FROM information_schema.tables t
-                LEFT JOIN pg_stat_user_tables s
-                    ON s.schemaname = t.table_schema
-                    AND s.relname = t.table_name
-                WHERE t.table_schema = $1 AND t.table_type = 'BASE TABLE'
-                ORDER BY s.n_live_tup DESC NULLS LAST
-                LIMIT $2
-                """,
-                schema,
-                min(max(limit, 1), 1000),
-            )
-        ]
+        return await self._fetch(
+            """
+            SELECT
+                t.table_name,
+                obj_description((quote_ident(t.table_schema) || '.' ||
+                    quote_ident(t.table_name))::regclass) AS description,
+                s.n_live_tup AS estimated_row_count
+            FROM information_schema.tables t
+            LEFT JOIN pg_stat_user_tables s
+                ON s.schemaname = t.table_schema
+                AND s.relname = t.table_name
+            WHERE t.table_schema = $1 AND t.table_type = 'BASE TABLE'
+            ORDER BY s.n_live_tup DESC NULLS LAST
+            LIMIT $2
+            """,
+            schema,
+            limit,
+        )
 
     async def list_views(
         self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
     ) -> list[dict[str, object]]:
-        rows = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    v.table_name AS view_name,
-                    obj_description(
-                        (quote_ident(v.table_schema) || '.' ||
-                         quote_ident(v.table_name))::regclass
-                    ) AS description,
-                    pg_get_viewdef(
-                        (quote_ident(v.table_schema) || '.' ||
-                         quote_ident(v.table_name))::regclass, true
-                    ) AS definition
-                FROM information_schema.views v
-                WHERE v.table_schema = $1
-                ORDER BY v.table_name
-                LIMIT $2
-                """,
-                schema,
-                min(max(limit, 1), 1000),
-            )
-        ]
+        rows = await self._fetch(
+            """
+            SELECT
+                v.table_name AS view_name,
+                obj_description(
+                    (quote_ident(v.table_schema) || '.' ||
+                     quote_ident(v.table_name))::regclass
+                ) AS description,
+                pg_get_viewdef(
+                    (quote_ident(v.table_schema) || '.' ||
+                     quote_ident(v.table_name))::regclass, true
+                ) AS definition
+            FROM information_schema.views v
+            WHERE v.table_schema = $1
+            ORDER BY v.table_name
+            LIMIT $2
+            """,
+            schema,
+            limit,
+        )
         return select_detail(rows, detail, names=("view_name",), heavy=("definition",))
 
-    async def list_extensions(self) -> list[dict[str, object]]:
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT extname, extversion, obj_description(e.oid, 'pg_extension') AS description
-                FROM pg_extension e
-                ORDER BY extname
-                """
-            )
-        ]
+    async def matview_status(
+        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+    ) -> list[dict[str, object]]:
+        rows = await self._fetch(
+            """
+            SELECT
+                m.matviewname AS matview_name,
+                m.ispopulated,
+                m.definition,
+                pg_size_pretty(pg_total_relation_size(
+                    (quote_ident(m.schemaname) || '.' ||
+                     quote_ident(m.matviewname))::regclass
+                )) AS total_size,
+                EXISTS (
+                    SELECT 1 FROM pg_index i
+                    WHERE i.indrelid = (
+                        quote_ident(m.schemaname) || '.' ||
+                        quote_ident(m.matviewname)
+                    )::regclass AND i.indisunique
+                ) AS has_unique_index
+            FROM pg_matviews m
+            WHERE m.schemaname = $1
+            ORDER BY m.matviewname
+            LIMIT $2
+            """,
+            schema,
+            limit,
+        )
+        return select_detail(rows, detail, names=("matview_name",), heavy=("definition",))
+
+    async def list_indexes(
+        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+    ) -> list[dict[str, object]]:
+        rows = await self._fetch(
+            """
+            SELECT
+                i.relname AS index_name,
+                t.relname AS table_name,
+                ix.indisunique AS is_unique,
+                ix.indisprimary AS is_primary,
+                am.amname AS index_type,
+                pg_get_indexdef(ix.indexrelid) AS definition,
+                ix.indisvalid AS is_valid,
+                pg_size_pretty(pg_relation_size(ix.indexrelid)) AS index_size,
+                pg_relation_size(ix.indexrelid) AS index_size_bytes,
+                s.idx_scan AS scans_since_reset,
+                s.idx_tup_read AS tuples_read,
+                s.idx_tup_fetch AS tuples_fetched
+            FROM pg_index ix
+            JOIN pg_class i ON i.oid = ix.indexrelid
+            JOIN pg_class t ON t.oid = ix.indrelid
+            JOIN pg_namespace n ON t.relnamespace = n.oid
+            JOIN pg_am am ON i.relam = am.oid
+            LEFT JOIN pg_stat_user_indexes s
+                ON s.indexrelid = ix.indexrelid
+            WHERE n.nspname = $1
+            ORDER BY t.relname, i.relname
+            LIMIT $2
+            """,
+            schema,
+            limit,
+        )
+        return select_detail(
+            rows, detail, names=("index_name", "table_name"), heavy=("definition",)
+        )
+
+    async def list_functions(
+        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+    ) -> list[dict[str, object]]:
+        rows = await self._fetch(
+            """
+            SELECT
+                p.proname AS function_name,
+                pg_get_function_arguments(p.oid) AS arguments,
+                pg_get_function_result(p.oid) AS return_type,
+                l.lanname AS language,
+                CASE p.provolatile
+                    WHEN 'i' THEN 'immutable'
+                    WHEN 's' THEN 'stable'
+                    WHEN 'v' THEN 'volatile'
+                END AS volatility,
+                CASE p.prokind
+                    WHEN 'f' THEN 'function'
+                    WHEN 'p' THEN 'procedure'
+                    WHEN 'a' THEN 'aggregate'
+                    WHEN 'w' THEN 'window'
+                END AS kind,
+                obj_description(p.oid) AS description,
+                p.prosrc AS source
+            FROM pg_proc p
+            JOIN pg_namespace n ON p.pronamespace = n.oid
+            JOIN pg_language l ON p.prolang = l.oid
+            WHERE n.nspname = $1
+                AND p.prokind != 'a'
+            ORDER BY p.proname
+            LIMIT $2
+            """,
+            schema,
+            limit,
+        )
+        return select_detail(rows, detail, names=("function_name",), heavy=("source",))
+
+    async def sequence_health(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                s.sequencename AS sequence_name,
+                s.last_value,
+                s.start_value,
+                s.min_value,
+                s.max_value,
+                s.increment_by,
+                s.cycle AS is_cycled,
+                CASE WHEN s.max_value != s.min_value AND s.last_value IS NOT NULL
+                    THEN round(
+                        CASE WHEN s.increment_by < 0
+                            THEN 100.0 * (s.max_value - s.last_value)
+                                / (s.max_value - s.min_value)
+                            ELSE 100.0 * (s.last_value - s.min_value)
+                                / (s.max_value - s.min_value)
+                        END, 2
+                    )
+                END AS pct_consumed
+            FROM pg_sequences s
+            WHERE s.schemaname = $1
+            ORDER BY pct_consumed DESC NULLS LAST
+            LIMIT $2
+            """,
+            schema,
+            limit,
+        )
+
+    async def search_columns(
+        self, keyword: str, schema: str, limit: int = 100
+    ) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT table_name, column_name, data_type, udt_name
+            FROM information_schema.columns
+            WHERE table_schema = $1
+                AND column_name ILIKE '%' || $2 || '%'
+            ORDER BY table_name, ordinal_position
+            LIMIT $3
+            """,
+            schema,
+            like_pattern(keyword),
+            limit,
+        )
+
+    async def search_enum_values(self, keyword: str) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                n.nspname AS schema,
+                t.typname AS enum_name,
+                array_agg(e.enumlabel ORDER BY e.enumsortorder) AS values
+            FROM pg_type t
+            JOIN pg_namespace n ON t.typnamespace = n.oid
+            JOIN pg_enum e ON t.oid = e.enumtypid
+            WHERE t.typname ILIKE '%' || $1 || '%'
+            GROUP BY n.nspname, t.typname
+            ORDER BY n.nspname, t.typname
+            """,
+            like_pattern(keyword),
+        )
+
+    # -- One table in depth --
 
     async def describe_table(
         self, table_name: str, schema: str, detail: DetailLevel = "summary"
     ) -> dict[str, object]:
         ref = self.safe_table_ref(schema, table_name)
-
-        columns = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    c.column_name,
-                    c.data_type,
-                    c.udt_name,
-                    c.is_nullable,
-                    c.column_default,
-                    col_description($1::regclass, c.ordinal_position) AS description
-                FROM information_schema.columns c
-                WHERE c.table_schema = $2 AND c.table_name = $3
-                ORDER BY c.ordinal_position
-                """,
-                ref,
-                schema,
-                table_name,
-            )
-        ]
-
+        columns = await self._fetch(
+            """
+            SELECT
+                c.column_name,
+                c.data_type,
+                c.udt_name,
+                c.is_nullable,
+                c.column_default,
+                col_description($1::regclass, c.ordinal_position) AS description
+            FROM information_schema.columns c
+            WHERE c.table_schema = $2 AND c.table_name = $3
+            ORDER BY c.ordinal_position
+            """,
+            ref,
+            schema,
+            table_name,
+        )
         primary_keys = [
             r["column_name"]
-            for r in await self.pool.fetch(
+            for r in await self._fetch(
                 """
                 SELECT a.attname AS column_name
                 FROM pg_index i
@@ -249,385 +395,339 @@ class AsyncpgDatabase:
                 ref,
             )
         ]
-
         if detail == "names":
             return {
                 "table": f"{schema}.{table_name}",
                 "columns": [c["column_name"] for c in columns],
                 "primary_keys": primary_keys,
             }
-
-        foreign_keys = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    a1.attname AS column_name,
-                    ns2.nspname AS foreign_schema,
-                    cl2.relname AS foreign_table,
-                    a2.attname AS foreign_column
-                FROM pg_constraint con
-                JOIN pg_class cl1 ON con.conrelid = cl1.oid
-                JOIN pg_namespace ns1 ON cl1.relnamespace = ns1.oid
-                JOIN pg_class cl2 ON con.confrelid = cl2.oid
-                JOIN pg_namespace ns2 ON cl2.relnamespace = ns2.oid
-                CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
-                    WITH ORDINALITY AS u(local_attnum, foreign_attnum, ord)
-                JOIN pg_attribute a1
-                    ON a1.attrelid = con.conrelid AND a1.attnum = u.local_attnum
-                JOIN pg_attribute a2
-                    ON a2.attrelid = con.confrelid AND a2.attnum = u.foreign_attnum
-                WHERE con.contype = 'f'
-                    AND ns1.nspname = $1 AND cl1.relname = $2
-                ORDER BY con.conname, u.ord
-                """,
-                schema,
-                table_name,
-            )
-        ]
-
-        referenced_by = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    ns1.nspname AS from_schema,
-                    cl1.relname AS from_table,
-                    a1.attname AS from_column,
-                    a2.attname AS to_column
-                FROM pg_constraint con
-                JOIN pg_class cl1 ON con.conrelid = cl1.oid
-                JOIN pg_namespace ns1 ON cl1.relnamespace = ns1.oid
-                JOIN pg_class cl2 ON con.confrelid = cl2.oid
-                JOIN pg_namespace ns2 ON cl2.relnamespace = ns2.oid
-                CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
-                    WITH ORDINALITY AS u(local_attnum, foreign_attnum, ord)
-                JOIN pg_attribute a1
-                    ON a1.attrelid = con.conrelid AND a1.attnum = u.local_attnum
-                JOIN pg_attribute a2
-                    ON a2.attrelid = con.confrelid AND a2.attnum = u.foreign_attnum
-                WHERE con.contype = 'f'
-                    AND ns2.nspname = $1 AND cl2.relname = $2
-                ORDER BY con.conname, u.ord
-                """,
-                schema,
-                table_name,
-            )
-        ]
-
-        indexes = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    i.relname AS index_name,
-                    ix.indisunique AS is_unique,
-                    pg_get_indexdef(ix.indexrelid) AS definition
-                FROM pg_index ix
-                JOIN pg_class i ON i.oid = ix.indexrelid
-                WHERE ix.indrelid = $1::regclass
-                ORDER BY i.relname
-                """,
-                ref,
-            )
-        ]
-
-        check_constraints = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    conname AS constraint_name,
-                    pg_get_constraintdef(oid) AS definition
-                FROM pg_constraint
-                WHERE conrelid = $1::regclass AND contype = 'c'
-                ORDER BY conname
-                """,
-                ref,
-            )
-        ]
-
-        if detail == "summary":
-            indexes = select_detail(indexes, detail, names=("index_name",), heavy=("definition",))
-
+        foreign_keys = await self._fetch(
+            f"""
+            SELECT
+                a1.attname AS column_name,
+                ns2.nspname AS foreign_schema,
+                cl2.relname AS foreign_table,
+                a2.attname AS foreign_column
+            {FOREIGN_KEY_PAIRS}
+                AND ns1.nspname = $1 AND cl1.relname = $2
+            ORDER BY con.conname, u.ord
+            """,
+            schema,
+            table_name,
+        )
+        referenced_by = await self._fetch(
+            f"""
+            SELECT
+                ns1.nspname AS from_schema,
+                cl1.relname AS from_table,
+                a1.attname AS from_column,
+                a2.attname AS to_column
+            {FOREIGN_KEY_PAIRS}
+                AND ns2.nspname = $1 AND cl2.relname = $2
+            ORDER BY con.conname, u.ord
+            """,
+            schema,
+            table_name,
+        )
+        indexes = await self._fetch(
+            """
+            SELECT
+                i.relname AS index_name,
+                ix.indisunique AS is_unique,
+                pg_get_indexdef(ix.indexrelid) AS definition
+            FROM pg_index ix
+            JOIN pg_class i ON i.oid = ix.indexrelid
+            WHERE ix.indrelid = $1::regclass
+            ORDER BY i.relname
+            """,
+            ref,
+        )
+        check_constraints = await self._fetch(
+            """
+            SELECT
+                conname AS constraint_name,
+                pg_get_constraintdef(oid) AS definition
+            FROM pg_constraint
+            WHERE conrelid = $1::regclass AND contype = 'c'
+            ORDER BY conname
+            """,
+            ref,
+        )
         return {
             "table": f"{schema}.{table_name}",
             "columns": columns,
             "primary_keys": primary_keys,
             "foreign_keys": foreign_keys,
             "referenced_by": referenced_by,
-            "indexes": indexes,
+            "indexes": select_detail(indexes, detail, names=("index_name",), heavy=("definition",)),
             "check_constraints": check_constraints,
         }
+
+    async def list_triggers(self, table_name: str, schema: str) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                t.tgname AS trigger_name,
+                pg_get_triggerdef(t.oid) AS definition,
+                CASE t.tgenabled
+                    WHEN 'O' THEN 'enabled'
+                    WHEN 'D' THEN 'disabled'
+                    WHEN 'R' THEN 'replica'
+                    WHEN 'A' THEN 'always'
+                END AS status,
+                p.proname AS function_name
+            FROM pg_trigger t
+            JOIN pg_proc p ON t.tgfoid = p.oid
+            WHERE t.tgrelid = $1::regclass
+                AND NOT t.tgisinternal
+            ORDER BY t.tgname
+            """,
+            self.safe_table_ref(schema, table_name),
+        )
+
+    async def list_policies(self, table_name: str, schema: str) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                pol.polname AS policy_name,
+                CASE pol.polcmd
+                    WHEN 'r' THEN 'SELECT'
+                    WHEN 'a' THEN 'INSERT'
+                    WHEN 'w' THEN 'UPDATE'
+                    WHEN 'd' THEN 'DELETE'
+                    WHEN '*' THEN 'ALL'
+                END AS command,
+                CASE WHEN pol.polpermissive THEN 'permissive'
+                    ELSE 'restrictive'
+                END AS type,
+                pg_get_expr(pol.polqual, pol.polrelid) AS using_expression,
+                pg_get_expr(pol.polwithcheck, pol.polrelid) AS with_check,
+                array(
+                    SELECT rolname FROM pg_roles
+                    WHERE oid = ANY(pol.polroles)
+                ) AS roles,
+                c.relrowsecurity AS rls_enabled,
+                c.relforcerowsecurity AS rls_forced
+            FROM pg_policy pol
+            JOIN pg_class c ON pol.polrelid = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE n.nspname = $1 AND c.relname = $2
+            ORDER BY pol.polname
+            """,
+            schema,
+            table_name,
+        )
+
+    async def object_dependencies(
+        self, object_name: str, object_type: str, schema: str
+    ) -> list[dict[str, object]]:
+        if object_type == "function":
+            return await self._fetch(
+                """
+                WITH target AS (
+                    SELECT p.oid FROM pg_proc p
+                    JOIN pg_namespace n ON p.pronamespace = n.oid
+                    WHERE p.proname = $1 AND n.nspname = $2
+                )
+                SELECT DISTINCT
+                    dep_ns.nspname AS dependent_schema,
+                    dep_cl.relname AS dependent_name,
+                    CASE dep_cl.relkind
+                        WHEN 'r' THEN 'table'
+                        WHEN 'v' THEN 'view'
+                        WHEN 'm' THEN 'matview'
+                        WHEN 'S' THEN 'sequence'
+                        WHEN 'i' THEN 'index'
+                        ELSE dep_cl.relkind::text
+                    END AS dependent_type
+                FROM pg_depend d
+                JOIN target t ON d.refobjid = t.oid
+                JOIN pg_class dep_cl ON d.objid = dep_cl.oid
+                JOIN pg_namespace dep_ns ON dep_cl.relnamespace = dep_ns.oid
+                WHERE d.deptype IN ('n', 'a')
+                    AND d.classid = 'pg_class'::regclass
+                ORDER BY dependent_type, dependent_name
+                """,
+                object_name,
+                schema,
+            )
+        return await self._fetch(
+            """
+            WITH target AS (
+                SELECT c.oid
+                FROM pg_class c
+                JOIN pg_namespace n ON c.relnamespace = n.oid
+                WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind::text = $3
+            )
+            SELECT DISTINCT
+                CASE d.classid
+                    WHEN 'pg_class'::regclass THEN
+                        CASE dep_cl.relkind
+                            WHEN 'r' THEN 'table'
+                            WHEN 'v' THEN 'view'
+                            WHEN 'm' THEN 'matview'
+                            WHEN 'S' THEN 'sequence'
+                            WHEN 'i' THEN 'index'
+                            ELSE dep_cl.relkind::text
+                        END
+                    WHEN 'pg_proc'::regclass THEN 'function'
+                    WHEN 'pg_constraint'::regclass THEN 'constraint'
+                    WHEN 'pg_attrdef'::regclass THEN 'column default'
+                    WHEN 'pg_rewrite'::regclass THEN
+                        CASE rw_cl.relkind
+                            WHEN 'v' THEN 'view'
+                            WHEN 'm' THEN 'matview'
+                            ELSE 'rule'
+                        END
+                    ELSE d.classid::regclass::text
+                END AS dependent_type,
+                CASE d.classid
+                    WHEN 'pg_class'::regclass THEN dep_cl.relname
+                    WHEN 'pg_proc'::regclass THEN dep_proc.proname
+                    WHEN 'pg_constraint'::regclass THEN dep_con.conname
+                    WHEN 'pg_attrdef'::regclass
+                        THEN ad_cl.relname || '.' || ad_att.attname
+                    WHEN 'pg_rewrite'::regclass
+                        THEN coalesce(rw_cl.relname, dep_rw.rulename)
+                    ELSE d.objid::text
+                END AS dependent_name,
+                CASE d.classid
+                    WHEN 'pg_class'::regclass THEN dep_ns.nspname
+                    WHEN 'pg_proc'::regclass THEN proc_ns.nspname
+                    WHEN 'pg_constraint'::regclass THEN con_ns.nspname
+                    WHEN 'pg_attrdef'::regclass THEN ad_ns.nspname
+                    WHEN 'pg_rewrite'::regclass THEN rw_ns.nspname
+                    ELSE NULL
+                END AS dependent_schema
+            FROM pg_depend d
+            JOIN target t ON d.refobjid = t.oid
+            LEFT JOIN pg_class dep_cl ON d.classid = 'pg_class'::regclass
+                AND d.objid = dep_cl.oid
+            LEFT JOIN pg_namespace dep_ns ON dep_cl.relnamespace = dep_ns.oid
+            LEFT JOIN pg_index dep_ix ON dep_cl.relkind = 'i'
+                AND dep_ix.indexrelid = dep_cl.oid
+            LEFT JOIN pg_proc dep_proc ON d.classid = 'pg_proc'::regclass
+                AND d.objid = dep_proc.oid
+            LEFT JOIN pg_namespace proc_ns ON dep_proc.pronamespace = proc_ns.oid
+            LEFT JOIN pg_constraint dep_con ON d.classid = 'pg_constraint'::regclass
+                AND d.objid = dep_con.oid
+            LEFT JOIN pg_namespace con_ns ON dep_con.connamespace = con_ns.oid
+            LEFT JOIN pg_attrdef dep_ad ON d.classid = 'pg_attrdef'::regclass
+                AND d.objid = dep_ad.oid
+            LEFT JOIN pg_class ad_cl ON dep_ad.adrelid = ad_cl.oid
+            LEFT JOIN pg_namespace ad_ns ON ad_cl.relnamespace = ad_ns.oid
+            LEFT JOIN pg_attribute ad_att ON ad_att.attrelid = dep_ad.adrelid
+                AND ad_att.attnum = dep_ad.adnum
+            LEFT JOIN pg_rewrite dep_rw ON d.classid = 'pg_rewrite'::regclass
+                AND d.objid = dep_rw.oid
+            LEFT JOIN pg_class rw_cl ON dep_rw.ev_class = rw_cl.oid
+            LEFT JOIN pg_namespace rw_ns ON rw_cl.relnamespace = rw_ns.oid
+            WHERE d.deptype IN ('n', 'a')
+                AND d.objid != t.oid
+                -- the target's own indexes are part of it, not dependents
+                AND dep_ix.indrelid IS DISTINCT FROM t.oid
+                -- the target's own constraints (PK, unique, check) likewise
+                AND dep_con.conrelid IS DISTINCT FROM t.oid
+                -- the target's own column defaults likewise
+                AND dep_ad.adrelid IS DISTINCT FROM t.oid
+                -- a view's own _RETURN rule depends on the view itself
+                AND dep_rw.ev_class IS DISTINCT FROM t.oid
+            ORDER BY dependent_type, dependent_name
+            """,
+            object_name,
+            schema,
+            RELKIND[object_type],
+        )
 
     async def find_join_path(
         self, source_table: str, target_table: str, schema: str, max_depth: int
     ) -> dict[str, object]:
-        max_depth = min(max(max_depth, 1), 6)
-
-        fk_rows = await self.pool.fetch(
-            """
+        fk_rows = await self._fetch(
+            f"""
             SELECT
                 cl1.relname AS from_table,
                 a1.attname AS from_column,
                 cl2.relname AS to_table,
                 a2.attname AS to_column
-            FROM pg_constraint con
-            JOIN pg_class cl1 ON con.conrelid = cl1.oid
-            JOIN pg_namespace ns1 ON cl1.relnamespace = ns1.oid
-            JOIN pg_class cl2 ON con.confrelid = cl2.oid
-            JOIN pg_namespace ns2 ON cl2.relnamespace = ns2.oid
-            CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
-                WITH ORDINALITY AS u(local_attnum, foreign_attnum, ord)
-            JOIN pg_attribute a1
-                ON a1.attrelid = con.conrelid AND a1.attnum = u.local_attnum
-            JOIN pg_attribute a2
-                ON a2.attrelid = con.confrelid AND a2.attnum = u.foreign_attnum
-            WHERE con.contype = 'f'
+            {FOREIGN_KEY_PAIRS}
                 AND ns1.nspname = $1
                 AND ns2.nspname = $1
             """,
             schema,
         )
-
-        # Build bidirectional adjacency list
+        # Undirected adjacency: a foreign key can be joined from either side.
         graph: dict[str, list[dict[str, str]]] = defaultdict(list)
         for row in fk_rows:
-            fr = row["from_table"]
-            to = row["to_table"]
-            fc = row["from_column"]
-            tc = row["to_column"]
-            graph[fr].append({"table": to, "from_col": fc, "to_col": tc, "direction": "outgoing"})
-            graph[to].append({"table": fr, "from_col": tc, "to_col": fc, "direction": "incoming"})
+            fr, fc = str(row["from_table"]), str(row["from_column"])
+            to, tc = str(row["to_table"]), str(row["to_column"])
+            graph[fr].append({"table": to, "from_col": fc, "to_col": tc})
+            graph[to].append({"table": fr, "from_col": tc, "to_col": fc})
 
-        # BFS to find all paths up to max_depth
+        # Breadth-first search over simple paths of at most max_depth hops.
         paths: list[list[dict[str, str]]] = []
-        # Queue items: (current_table, path_of_edges, visited_tables)
         queue: deque[tuple[str, list[dict[str, str]], set[str]]] = deque()
         queue.append((source_table, [], {source_table}))
-
         while queue:
             current, path, visited = queue.popleft()
-            if len(path) > max_depth:
-                continue
             if current == target_table and path:
                 paths.append(path)
                 continue
             if len(path) >= max_depth:
                 continue
             for edge in graph.get(current, []):
-                next_table = edge["table"]
-                if next_table not in visited:
-                    new_edge = {
+                nxt = edge["table"]
+                if nxt not in visited:
+                    hop = {
                         "from_table": current,
                         "from_column": edge["from_col"],
-                        "to_table": next_table,
+                        "to_table": nxt,
                         "to_column": edge["to_col"],
                     }
-                    queue.append((next_table, path + [new_edge], visited | {next_table}))
+                    queue.append((nxt, [*path, hop], visited | {nxt}))
 
-        # Format results
-        formatted_paths = []
-        for path in paths:
-            joins = []
-            for edge in path:
-                joins.append(
-                    f"{edge['from_table']}.{edge['from_column']}"
-                    f" = {edge['to_table']}.{edge['to_column']}"
-                )
-            tables = [path[0]["from_table"]] + [e["to_table"] for e in path]
-            formatted_paths.append(
-                {
-                    "tables": tables,
-                    "joins": joins,
-                    "hops": len(path),
-                }
-            )
-
-        formatted_paths.sort(key=lambda p: cast(int, p["hops"]))
-
+        formatted: list[dict[str, object]] = [
+            {
+                "tables": [path[0]["from_table"], *(hop["to_table"] for hop in path)],
+                "joins": [
+                    f"{hop['from_table']}.{hop['from_column']}"
+                    f" = {hop['to_table']}.{hop['to_column']}"
+                    for hop in path
+                ],
+                "hops": len(path),
+            }
+            for path in paths  # BFS yields shortest paths first
+        ]
         return {
             "source": source_table,
             "target": target_table,
             "schema": schema,
-            "paths_found": len(formatted_paths),
-            "paths": formatted_paths,
+            "paths_found": len(formatted),
+            "paths": formatted,
         }
+
+    # -- Data: user-influenced SQL, run inside explicit read-only transactions --
 
     async def column_values(
         self, table_name: str, column_name: str, top_n: int, schema: str
     ) -> list[dict[str, object]]:
         ref = self.safe_table_ref(schema, table_name)
-        col = self.safe_column_ref(column_name)
-        async with self.pool.acquire() as conn:
-            async with conn.transaction(readonly=True):
-                return [
-                    dict(r)
-                    for r in await conn.fetch(
-                        f"""
-                        SELECT
-                            {col}::text AS value,
-                            count(*) AS frequency
-                        FROM {ref}
-                        GROUP BY 1
-                        ORDER BY 2 DESC
-                        LIMIT $1
-                        """,
-                        min(max(top_n, 1), 100),
-                    )
-                ]
-
-    async def search_columns(
-        self, keyword: str, schema: str, limit: int = 100
-    ) -> list[dict[str, object]]:
-        escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT table_name, column_name, data_type, udt_name
-                FROM information_schema.columns
-                WHERE table_schema = $1
-                    AND column_name ILIKE '%' || $2 || '%'
-                ORDER BY table_name, ordinal_position
-                LIMIT $3
-                """,
-                schema,
-                escaped,
-                min(max(limit, 1), 1000),
-            )
-        ]
-
-    async def search_enum_values(self, keyword: str) -> list[dict[str, object]]:
-        escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    n.nspname AS schema,
-                    t.typname AS enum_name,
-                    array_agg(e.enumlabel ORDER BY e.enumsortorder) AS values
-                FROM pg_type t
-                JOIN pg_namespace n ON t.typnamespace = n.oid
-                JOIN pg_enum e ON t.oid = e.enumtypid
-                WHERE t.typname ILIKE '%' || $1 || '%'
-                GROUP BY n.nspname, t.typname
-                ORDER BY n.nspname, t.typname
-                """,
-                escaped,
-            )
-        ]
-
-    async def table_health(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
-        # PG18: cumulative maintenance timings on pg_stat_all_tables, relallfrozen on pg_class.
-        pg18_columns = (
-            """
-                    round(s.total_vacuum_time::numeric, 1) AS total_vacuum_time_ms,
-                    round(s.total_autovacuum_time::numeric, 1) AS total_autovacuum_time_ms,
-                    round(s.total_analyze_time::numeric, 1) AS total_analyze_time_ms,
-                    round(s.total_autoanalyze_time::numeric, 1) AS total_autoanalyze_time_ms,
-                    c.relallfrozen,
-                    CASE WHEN c.relpages > 0
-                        THEN round(100.0 * c.relallfrozen / c.relpages, 1)
-                    END AS frozen_pct,
-            """
-            if await self._get_server_version_num() >= 180000
-            else ""
+        col = quote_ident(column_name)
+        return await self._fetch_user(
+            f"""
+            SELECT
+                {col}::text AS value,
+                count(*) AS frequency
+            FROM {ref}
+            GROUP BY 1
+            ORDER BY 2 DESC
+            LIMIT $1
+            """,
+            top_n,
         )
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                f"""
-                SELECT
-                    s.relname AS table_name,
-                    s.seq_scan,
-                    s.idx_scan,
-                    CASE WHEN (s.seq_scan + s.idx_scan) > 0
-                        THEN round(100.0 * s.idx_scan / (s.seq_scan + s.idx_scan), 1)
-                    END AS index_hit_pct,
-                    s.n_live_tup,
-                    s.n_dead_tup,
-                    CASE WHEN s.n_live_tup > 0
-                        THEN round(100.0 * s.n_dead_tup / s.n_live_tup, 1)
-                    END AS dead_tuple_pct,
-                    age(c.relfrozenxid) AS xid_age,
-                    round(
-                        100.0 * age(c.relfrozenxid)
-                        / current_setting('autovacuum_freeze_max_age')::bigint, 1
-                    ) AS wraparound_pct,
-                    {pg18_columns}
-                    s.last_vacuum,
-                    s.last_autovacuum,
-                    s.last_analyze,
-                    s.last_autoanalyze
-                FROM pg_stat_user_tables s
-                JOIN pg_class c ON c.oid = s.relid
-                WHERE s.schemaname = $1
-                ORDER BY s.n_live_tup DESC NULLS LAST
-                LIMIT $2
-                """,
-                schema,
-                min(max(limit, 1), 1000),
-            )
-        ]
-
-    async def explain_query(
-        self,
-        sql: str,
-        analyze: bool = False,
-        buffers: bool = False,
-    ) -> str:
-        normalized = validate_select(sql, allow_cursor=True)
-        # Omit BUFFERS when false so the server default applies (on with ANALYZE since PG18).
-        options = (
-            f"ANALYZE {analyze}, BUFFERS TRUE, FORMAT TEXT"
-            if buffers
-            else f"ANALYZE {analyze}, FORMAT TEXT"
-        )
-        async with self.pool.acquire() as conn:
-            async with conn.transaction(readonly=True):
-                rows = await conn.fetch(f"EXPLAIN ({options}) {normalized}")
-                return "\n".join(r["QUERY PLAN"] for r in rows)
-
-    async def query(self, sql: str, limit: int = 500, offset: int = 0) -> list[dict[str, object]]:
-        normalized = validate_select(sql)
-        async with self.pool.acquire() as conn:
-            async with conn.transaction(readonly=True):
-                rows = await conn.fetch(
-                    f"SELECT * FROM ({normalized}) sub LIMIT $1 OFFSET $2",
-                    min(max(limit, 1), 500),
-                    max(offset, 0),
-                )
-                return self._rows(rows)
-
-    async def list_schemas(self) -> list[dict[str, object]]:
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    n.nspname AS schema_name,
-                    pg_catalog.pg_get_userbyid(n.nspowner) AS owner,
-                    obj_description(n.oid) AS description,
-                    count(c.oid) FILTER (WHERE c.relkind = 'r') AS table_count,
-                    count(c.oid) FILTER (WHERE c.relkind = 'v') AS view_count
-                FROM pg_namespace n
-                LEFT JOIN pg_class c ON c.relnamespace = n.oid
-                    AND c.relkind IN ('r', 'v')
-                WHERE n.nspname NOT LIKE 'pg_%'
-                    AND n.nspname != 'information_schema'
-                GROUP BY n.nspname, n.nspowner, n.oid
-                ORDER BY n.nspname
-                """
-            )
-        ]
 
     async def column_stats(
         self, table_name: str, column_name: str, schema: str
     ) -> dict[str, object]:
-        ref = self.safe_table_ref(schema, table_name)
-        col = self.safe_column_ref(column_name)
         stats = await self.pool.fetchrow(
             """
             SELECT
@@ -648,236 +748,198 @@ class AsyncpgDatabase:
         if stats is None:
             return {"error": f"No statistics for {schema}.{table_name}.{column_name}. Run ANALYZE."}
 
-        async with self.pool.acquire() as conn:
-            try:
-                async with conn.transaction(readonly=True):
-                    summary_row = await conn.fetchrow(
-                        f"""
-                        SELECT
-                            min({col})::text AS min_value,
-                            max({col})::text AS max_value,
-                            count(*) AS total_rows,
-                            count({col}) AS non_null_count,
-                            count(*) - count({col}) AS null_count
-                        FROM {ref}
-                        """
-                    )
-            except asyncpg.UndefinedFunctionError:
-                # Types without ordering (json, point, xid, ...) have no min/max
-                async with conn.transaction(readonly=True):
-                    summary_row = await conn.fetchrow(
-                        f"""
-                        SELECT
-                            NULL::text AS min_value,
-                            NULL::text AS max_value,
-                            count(*) AS total_rows,
-                            count({col}) AS non_null_count,
-                            count(*) - count({col}) AS null_count
-                        FROM {ref}
-                        """
-                    )
-
-        summary = dict(summary_row) if summary_row else {}
-
-        result: dict[str, object] = {
+        ref = self.safe_table_ref(schema, table_name)
+        col = quote_ident(column_name)
+        counts = (
+            f"count(*) AS total_rows, count({col}) AS non_null_count, "
+            f"count(*) - count({col}) AS null_count FROM {ref}"
+        )
+        try:
+            [summary] = await self._fetch_user(
+                f"SELECT min({col})::text AS min_value, max({col})::text AS max_value, {counts}"
+            )
+        except asyncpg.UndefinedFunctionError:
+            # Types without ordering (json, point, xid, ...) have no min/max
+            [summary] = await self._fetch_user(
+                f"SELECT NULL::text AS min_value, NULL::text AS max_value, {counts}"
+            )
+        return {
             "column": f"{schema}.{table_name}.{column_name}",
-            "total_rows": summary.get("total_rows"),
-            "non_null_count": summary.get("non_null_count"),
-            "null_count": summary.get("null_count"),
-            "null_fraction": float(stats["null_frac"]) if stats["null_frac"] is not None else None,
-            "n_distinct": float(stats["n_distinct"]) if stats["n_distinct"] is not None else None,
-            "min_value": summary.get("min_value"),
-            "max_value": summary.get("max_value"),
+            "total_rows": summary["total_rows"],
+            "non_null_count": summary["non_null_count"],
+            "null_count": summary["null_count"],
+            "null_fraction": stats["null_frac"],
+            "n_distinct": stats["n_distinct"],
+            "min_value": summary["min_value"],
+            "max_value": summary["max_value"],
             "most_common_values": stats["most_common_vals"],
             "most_common_frequencies": stats["most_common_freqs"],
-            "correlation": float(stats["correlation"])
-            if stats["correlation"] is not None
-            else None,
+            "correlation": stats["correlation"],
         }
-        return result
 
-    # -- Object dependencies --
+    async def query(self, sql: str, limit: int = 500, offset: int = 0) -> list[dict[str, object]]:
+        rows = await self._fetch_user(
+            f"SELECT * FROM ({validate_select(sql)}) sub LIMIT $1 OFFSET $2", limit, offset
+        )
+        return [
+            {key: truncate_cell(value, self.max_cell_chars) for key, value in row.items()}
+            for row in rows
+        ]
 
-    async def object_dependencies(
-        self, object_name: str, object_type: str, schema: str
-    ) -> list[dict[str, object]]:
-        if object_type == "function":
+    async def explain_query(self, sql: str, analyze: bool = False, buffers: bool = False) -> str:
+        normalized = validate_select(sql, allow_cursor=True)
+        # Omit BUFFERS when false so the server default applies (on with ANALYZE since PG18).
+        options = (
+            f"ANALYZE {analyze}, BUFFERS TRUE, FORMAT TEXT"
+            if buffers
+            else f"ANALYZE {analyze}, FORMAT TEXT"
+        )
+        rows = await self._fetch_user(f"EXPLAIN ({options}) {normalized}")
+        return "\n".join(str(r["QUERY PLAN"]) for r in rows)
+
+    # -- Health --
+
+    async def table_health(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
+        # PG18: cumulative maintenance timings on pg_stat_all_tables, relallfrozen on pg_class.
+        pg18_columns = (
+            """
+                round(s.total_vacuum_time::numeric, 1) AS total_vacuum_time_ms,
+                round(s.total_autovacuum_time::numeric, 1) AS total_autovacuum_time_ms,
+                round(s.total_analyze_time::numeric, 1) AS total_analyze_time_ms,
+                round(s.total_autoanalyze_time::numeric, 1) AS total_autoanalyze_time_ms,
+                c.relallfrozen,
+                CASE WHEN c.relpages > 0
+                    THEN round(100.0 * c.relallfrozen / c.relpages, 1)
+                END AS frozen_pct,
+            """
+            if await self._get_server_version_num() >= 180000
+            else ""
+        )
+        return await self._fetch(
+            f"""
+            SELECT
+                s.relname AS table_name,
+                s.seq_scan,
+                s.idx_scan,
+                CASE WHEN (s.seq_scan + s.idx_scan) > 0
+                    THEN round(100.0 * s.idx_scan / (s.seq_scan + s.idx_scan), 1)
+                END AS index_hit_pct,
+                s.n_live_tup,
+                s.n_dead_tup,
+                CASE WHEN s.n_live_tup > 0
+                    THEN round(100.0 * s.n_dead_tup / s.n_live_tup, 1)
+                END AS dead_tuple_pct,
+                age(c.relfrozenxid) AS xid_age,
+                round(
+                    100.0 * age(c.relfrozenxid)
+                    / current_setting('autovacuum_freeze_max_age')::bigint, 1
+                ) AS wraparound_pct,
+                {pg18_columns}
+                s.last_vacuum,
+                s.last_autovacuum,
+                s.last_analyze,
+                s.last_autoanalyze
+            FROM pg_stat_user_tables s
+            JOIN pg_class c ON c.oid = s.relid
+            WHERE s.schemaname = $1
+            ORDER BY s.n_live_tup DESC NULLS LAST
+            LIMIT $2
+            """,
+            schema,
+            limit,
+        )
+
+    async def table_sizes(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                c.relname AS table_name,
+                pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size,
+                pg_size_pretty(pg_table_size(c.oid)) AS table_size,
+                pg_size_pretty(pg_indexes_size(c.oid)) AS indexes_size,
+                pg_total_relation_size(c.oid) AS total_bytes
+            FROM pg_class c
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE n.nspname = $1 AND c.relkind = 'r'
+            ORDER BY pg_total_relation_size(c.oid) DESC
+            LIMIT $2
+            """,
+            schema,
+            limit,
+        )
+
+    async def unused_indexes(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                s.indexrelname AS index_name,
+                s.relname AS table_name,
+                pg_size_pretty(pg_relation_size(s.indexrelid)) AS index_size,
+                pg_relation_size(s.indexrelid) AS index_bytes,
+                s.idx_scan AS scans_since_reset,
+                i.indisvalid AS is_valid,
+                pg_get_indexdef(s.indexrelid) AS definition
+            FROM pg_stat_user_indexes s
+            JOIN pg_index i ON s.indexrelid = i.indexrelid
+            WHERE s.schemaname = $1
+                AND s.idx_scan = 0
+                AND NOT i.indisunique
+                AND NOT i.indisprimary
+            ORDER BY pg_relation_size(s.indexrelid) DESC
+            LIMIT $2
+            """,
+            schema,
+            limit,
+        )
+
+    async def io_stats(self) -> list[dict[str, object]]:
+        version = await self._get_server_version_num()
+        if version < 160000:
             return [
-                dict(r)
-                for r in await self.pool.fetch(
-                    """
-                    WITH target AS (
-                        SELECT p.oid FROM pg_proc p
-                        JOIN pg_namespace n ON p.pronamespace = n.oid
-                        WHERE p.proname = $1 AND n.nspname = $2
-                    )
-                    SELECT DISTINCT
-                        dep_ns.nspname AS dependent_schema,
-                        dep_cl.relname AS dependent_name,
-                        CASE dep_cl.relkind
-                            WHEN 'r' THEN 'table'
-                            WHEN 'v' THEN 'view'
-                            WHEN 'm' THEN 'matview'
-                            WHEN 'S' THEN 'sequence'
-                            WHEN 'i' THEN 'index'
-                            ELSE dep_cl.relkind::text
-                        END AS dependent_type
-                    FROM pg_depend d
-                    JOIN target t ON d.refobjid = t.oid
-                    JOIN pg_class dep_cl ON d.objid = dep_cl.oid
-                    JOIN pg_namespace dep_ns ON dep_cl.relnamespace = dep_ns.oid
-                    WHERE d.deptype IN ('n', 'a')
-                        AND d.classid = 'pg_class'::regclass
-                    ORDER BY dependent_type, dependent_name
-                    """,
-                    object_name,
-                    schema,
-                )
+                {
+                    "error": "pg_stat_io requires PostgreSQL 16 or newer "
+                    f"(connected server is {version // 10000})."
+                }
             ]
-
-        relkind = object_type_to_relkind(object_type)
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                WITH target AS (
-                    SELECT c.oid
-                    FROM pg_class c
-                    JOIN pg_namespace n ON c.relnamespace = n.oid
-                    WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind::text = $3
-                )
-                SELECT DISTINCT
-                    CASE d.classid
-                        WHEN 'pg_class'::regclass THEN
-                            CASE dep_cl.relkind
-                                WHEN 'r' THEN 'table'
-                                WHEN 'v' THEN 'view'
-                                WHEN 'm' THEN 'matview'
-                                WHEN 'S' THEN 'sequence'
-                                WHEN 'i' THEN 'index'
-                                ELSE dep_cl.relkind::text
-                            END
-                        WHEN 'pg_proc'::regclass THEN 'function'
-                        WHEN 'pg_constraint'::regclass THEN 'constraint'
-                        WHEN 'pg_attrdef'::regclass THEN 'column default'
-                        WHEN 'pg_rewrite'::regclass THEN
-                            CASE rw_cl.relkind
-                                WHEN 'v' THEN 'view'
-                                WHEN 'm' THEN 'matview'
-                                ELSE 'rule'
-                            END
-                        ELSE d.classid::regclass::text
-                    END AS dependent_type,
-                    CASE d.classid
-                        WHEN 'pg_class'::regclass THEN dep_cl.relname
-                        WHEN 'pg_proc'::regclass THEN dep_proc.proname
-                        WHEN 'pg_constraint'::regclass THEN dep_con.conname
-                        WHEN 'pg_attrdef'::regclass
-                            THEN ad_cl.relname || '.' || ad_att.attname
-                        WHEN 'pg_rewrite'::regclass
-                            THEN coalesce(rw_cl.relname, dep_rw.rulename)
-                        ELSE d.objid::text
-                    END AS dependent_name,
-                    CASE d.classid
-                        WHEN 'pg_class'::regclass THEN dep_ns.nspname
-                        WHEN 'pg_proc'::regclass THEN proc_ns.nspname
-                        WHEN 'pg_constraint'::regclass THEN con_ns.nspname
-                        WHEN 'pg_attrdef'::regclass THEN ad_ns.nspname
-                        WHEN 'pg_rewrite'::regclass THEN rw_ns.nspname
-                        ELSE NULL
-                    END AS dependent_schema
-                FROM pg_depend d
-                JOIN target t ON d.refobjid = t.oid
-                LEFT JOIN pg_class dep_cl ON d.classid = 'pg_class'::regclass
-                    AND d.objid = dep_cl.oid
-                LEFT JOIN pg_namespace dep_ns ON dep_cl.relnamespace = dep_ns.oid
-                LEFT JOIN pg_index dep_ix ON dep_cl.relkind = 'i'
-                    AND dep_ix.indexrelid = dep_cl.oid
-                LEFT JOIN pg_proc dep_proc ON d.classid = 'pg_proc'::regclass
-                    AND d.objid = dep_proc.oid
-                LEFT JOIN pg_namespace proc_ns ON dep_proc.pronamespace = proc_ns.oid
-                LEFT JOIN pg_constraint dep_con ON d.classid = 'pg_constraint'::regclass
-                    AND d.objid = dep_con.oid
-                LEFT JOIN pg_namespace con_ns ON dep_con.connamespace = con_ns.oid
-                LEFT JOIN pg_attrdef dep_ad ON d.classid = 'pg_attrdef'::regclass
-                    AND d.objid = dep_ad.oid
-                LEFT JOIN pg_class ad_cl ON dep_ad.adrelid = ad_cl.oid
-                LEFT JOIN pg_namespace ad_ns ON ad_cl.relnamespace = ad_ns.oid
-                LEFT JOIN pg_attribute ad_att ON ad_att.attrelid = dep_ad.adrelid
-                    AND ad_att.attnum = dep_ad.adnum
-                LEFT JOIN pg_rewrite dep_rw ON d.classid = 'pg_rewrite'::regclass
-                    AND d.objid = dep_rw.oid
-                LEFT JOIN pg_class rw_cl ON dep_rw.ev_class = rw_cl.oid
-                LEFT JOIN pg_namespace rw_ns ON rw_cl.relnamespace = rw_ns.oid
-                WHERE d.deptype IN ('n', 'a')
-                    AND d.objid != t.oid
-                    -- the target's own indexes are part of it, not dependents
-                    AND dep_ix.indrelid IS DISTINCT FROM t.oid
-                    -- the target's own constraints (PK, unique, check) likewise
-                    AND dep_con.conrelid IS DISTINCT FROM t.oid
-                    -- the target's own column defaults likewise
-                    AND dep_ad.adrelid IS DISTINCT FROM t.oid
-                    -- a view's own _RETURN rule depends on the view itself
-                    AND dep_rw.ev_class IS DISTINCT FROM t.oid
-                ORDER BY dependent_type, dependent_name
-                """,
-                object_name,
-                schema,
-                relkind,
-            )
-        ]
-
-    # -- Lock & session monitor --
-
-    async def active_queries(self) -> list[dict[str, object]]:
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    pid,
-                    usename,
-                    application_name,
-                    client_addr::text,
-                    state,
-                    wait_event_type,
-                    wait_event,
-                    query,
-                    now() - query_start AS query_duration,
-                    now() - state_change AS state_duration
-                FROM pg_stat_activity
-                WHERE pid != pg_backend_pid()
-                    AND state IS NOT NULL
-                ORDER BY query_start ASC NULLS LAST
-                """
-            )
-        ]
-
-    async def blocking_locks(self) -> list[dict[str, object]]:
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    blocked.pid AS blocked_pid,
-                    blocked.usename AS blocked_user,
-                    blocked.query AS blocked_query,
-                    now() - blocked.query_start AS blocked_duration,
-                    blocker.pid AS blocker_pid,
-                    blocker.usename AS blocker_user,
-                    blocker.query AS blocker_query,
-                    blocker.state AS blocker_state
-                FROM pg_stat_activity blocked
-                JOIN LATERAL unnest(pg_blocking_pids(blocked.pid)) AS bp(pid) ON true
-                JOIN pg_stat_activity blocker ON blocker.pid = bp.pid
-                WHERE blocked.state = 'active'
-                    AND blocked.wait_event_type = 'Lock'
-                ORDER BY blocked_duration DESC
-                """
-            )
-        ]
-
-    # -- Statement & replication monitoring --
+        # PG18: byte counters alongside the operation counts.
+        pg18_columns = (
+            """
+                read_bytes,
+                write_bytes,
+                extend_bytes,
+            """
+            if version >= 180000
+            else ""
+        )
+        return await self._fetch(
+            f"""
+            SELECT
+                backend_type,
+                object,
+                context,
+                reads,
+                round(read_time::numeric, 1) AS read_time_ms,
+                writes,
+                round(write_time::numeric, 1) AS write_time_ms,
+                writebacks,
+                round(writeback_time::numeric, 1) AS writeback_time_ms,
+                extends,
+                round(extend_time::numeric, 1) AS extend_time_ms,
+                {pg18_columns}
+                hits,
+                evictions,
+                reuses,
+                fsyncs,
+                round(fsync_time::numeric, 1) AS fsync_time_ms,
+                stats_reset
+            FROM pg_stat_io
+            WHERE coalesce(reads, 0) <> 0 OR coalesce(writes, 0) <> 0
+               OR coalesce(extends, 0) <> 0 OR coalesce(hits, 0) <> 0
+               OR coalesce(evictions, 0) <> 0 OR coalesce(reuses, 0) <> 0
+               OR coalesce(fsyncs, 0) <> 0 OR coalesce(writebacks, 0) <> 0
+            ORDER BY backend_type, object, context
+            """
+        )
 
     async def slow_queries(self, limit: int) -> list[dict[str, object]]:
         installed = await self.pool.fetchval(
@@ -905,180 +967,81 @@ class AsyncpgDatabase:
         )
         pg18_columns = (
             """
-                    s.parallel_workers_to_launch,
-                    s.parallel_workers_launched,
-                    s.wal_buffers_full,
+                s.parallel_workers_to_launch,
+                s.parallel_workers_launched,
+                s.wal_buffers_full,
             """
             if has_pg18_columns
             else ""
         )
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                f"""
-                SELECT
-                    r.rolname AS username,
-                    d.datname AS database,
-                    s.calls,
-                    round(s.total_exec_time::numeric, 1) AS total_exec_time_ms,
-                    round(s.mean_exec_time::numeric, 2) AS mean_exec_time_ms,
-                    round(s.stddev_exec_time::numeric, 2) AS stddev_exec_time_ms,
-                    s.rows,
-                    round(
-                        100.0 * s.shared_blks_hit
-                        / nullif(s.shared_blks_hit + s.shared_blks_read, 0), 1
-                    ) AS cache_hit_pct,
-                    {pg18_columns}
-                    s.query
-                FROM pg_stat_statements s
-                JOIN pg_roles r ON r.oid = s.userid
-                JOIN pg_database d ON d.oid = s.dbid
-                ORDER BY s.total_exec_time DESC
-                LIMIT $1
-                """,
-                min(max(limit, 1), 100),
-            )
-        ]
-
-    async def replication_status(self) -> dict[str, object]:
-        in_recovery = await self.pool.fetchval("SELECT pg_is_in_recovery()")
-
-        standbys = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    pid,
-                    usename,
-                    application_name,
-                    client_addr::text,
-                    state,
-                    sync_state,
-                    write_lag,
-                    flush_lag,
-                    replay_lag,
-                    CASE WHEN pg_is_in_recovery() THEN NULL
-                        ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)
-                    END AS replay_lag_bytes
-                FROM pg_stat_replication
-                ORDER BY application_name, pid
-                """
-            )
-        ]
-
-        slots = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    slot_name,
-                    slot_type,
-                    plugin,
-                    database,
-                    active,
-                    wal_status,
-                    safe_wal_size,
-                    CASE WHEN pg_is_in_recovery() OR restart_lsn IS NULL THEN NULL
-                        ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)
-                    END AS retained_wal_bytes
-                FROM pg_replication_slots
-                ORDER BY slot_name
-                """
-            )
-        ]
-
-        version = await self._get_server_version_num()
-        if version < 150000:
-            subscriptions: list[dict[str, object]] = []
-        else:
-            # PG18: per-type logical replication conflict counters.
-            conflict_columns = (
-                """
-                    confl_insert_exists,
-                    confl_update_origin_differs,
-                    confl_update_exists,
-                    confl_update_missing,
-                    confl_delete_origin_differs,
-                    confl_delete_missing,
-                    confl_multiple_unique_conflicts,
-                """
-                if version >= 180000
-                else ""
-            )
-            subscriptions = [
-                dict(r)
-                for r in await self.pool.fetch(
-                    f"""
-                    SELECT
-                        subname,
-                        apply_error_count,
-                        sync_error_count,
-                        {conflict_columns}
-                        stats_reset
-                    FROM pg_stat_subscription_stats
-                    ORDER BY subname
-                    """
-                )
-            ]
-
-        return {
-            "in_recovery": in_recovery,
-            "standbys": standbys,
-            "slots": slots,
-            "subscriptions": subscriptions,
-        }
-
-    async def io_stats(self) -> list[dict[str, object]]:
-        version = await self._get_server_version_num()
-        if version < 160000:
-            return [
-                {
-                    "error": "pg_stat_io requires PostgreSQL 16 or newer "
-                    f"(connected server is {version // 10000})."
-                }
-            ]
-        # PG18: byte counters alongside the operation counts.
-        pg18_columns = (
-            """
-                    read_bytes,
-                    write_bytes,
-                    extend_bytes,
-            """
-            if version >= 180000
-            else ""
+        return await self._fetch(
+            f"""
+            SELECT
+                r.rolname AS username,
+                d.datname AS database,
+                s.calls,
+                round(s.total_exec_time::numeric, 1) AS total_exec_time_ms,
+                round(s.mean_exec_time::numeric, 2) AS mean_exec_time_ms,
+                round(s.stddev_exec_time::numeric, 2) AS stddev_exec_time_ms,
+                s.rows,
+                round(
+                    100.0 * s.shared_blks_hit
+                    / nullif(s.shared_blks_hit + s.shared_blks_read, 0), 1
+                ) AS cache_hit_pct,
+                {pg18_columns}
+                s.query
+            FROM pg_stat_statements s
+            JOIN pg_roles r ON r.oid = s.userid
+            JOIN pg_database d ON d.oid = s.dbid
+            ORDER BY s.total_exec_time DESC
+            LIMIT $1
+            """,
+            limit,
         )
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                f"""
-                SELECT
-                    backend_type,
-                    object,
-                    context,
-                    reads,
-                    round(read_time::numeric, 1) AS read_time_ms,
-                    writes,
-                    round(write_time::numeric, 1) AS write_time_ms,
-                    writebacks,
-                    round(writeback_time::numeric, 1) AS writeback_time_ms,
-                    extends,
-                    round(extend_time::numeric, 1) AS extend_time_ms,
-                    {pg18_columns}
-                    hits,
-                    evictions,
-                    reuses,
-                    fsyncs,
-                    round(fsync_time::numeric, 1) AS fsync_time_ms,
-                    stats_reset
-                FROM pg_stat_io
-                WHERE coalesce(reads, 0) <> 0 OR coalesce(writes, 0) <> 0
-                   OR coalesce(extends, 0) <> 0 OR coalesce(hits, 0) <> 0
-                   OR coalesce(evictions, 0) <> 0 OR coalesce(reuses, 0) <> 0
-                   OR coalesce(fsyncs, 0) <> 0 OR coalesce(writebacks, 0) <> 0
-                ORDER BY backend_type, object, context
-                """
-            )
-        ]
+
+    # -- Activity --
+
+    async def active_queries(self) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                pid,
+                usename,
+                application_name,
+                client_addr::text,
+                state,
+                wait_event_type,
+                wait_event,
+                query,
+                now() - query_start AS query_duration,
+                now() - state_change AS state_duration
+            FROM pg_stat_activity
+            WHERE pid != pg_backend_pid()
+                AND state IS NOT NULL
+            ORDER BY query_start ASC NULLS LAST
+            """
+        )
+
+    async def blocking_locks(self) -> list[dict[str, object]]:
+        return await self._fetch(
+            """
+            SELECT
+                blocked.pid AS blocked_pid,
+                blocked.usename AS blocked_user,
+                blocked.query AS blocked_query,
+                now() - blocked.query_start AS blocked_duration,
+                blocker.pid AS blocker_pid,
+                blocker.usename AS blocker_user,
+                blocker.query AS blocker_query,
+                blocker.state AS blocker_state
+            FROM pg_stat_activity blocked
+            JOIN LATERAL unnest(pg_blocking_pids(blocked.pid)) AS bp(pid) ON true
+            JOIN pg_stat_activity blocker ON blocker.pid = bp.pid
+            WHERE blocked.state = 'active'
+                AND blocked.wait_event_type = 'Lock'
+            ORDER BY blocked_duration DESC
+            """
+        )
 
     async def maintenance_progress(self) -> dict[str, object]:
         version = await self._get_server_version_num()
@@ -1098,118 +1061,101 @@ class AsyncpgDatabase:
             if version >= 180000
             else ""
         )
-
-        vacuum = [
-            dict(r)
-            for r in await self.pool.fetch(
-                f"""
-                SELECT
-                    p.pid,
-                    n.nspname AS schema,
-                    c.relname AS table_name,
-                    p.phase,
-                    p.heap_blks_total,
-                    p.heap_blks_scanned,
-                    CASE WHEN p.heap_blks_total > 0
-                        THEN round(100.0 * p.heap_blks_scanned / p.heap_blks_total, 1)
-                    END AS scanned_pct,
-                    p.heap_blks_vacuumed,
-                    {pg17_vacuum_columns}
-                    {delay_column}
-                    p.index_vacuum_count
-                FROM pg_stat_progress_vacuum p
-                LEFT JOIN pg_class c ON c.oid = p.relid
-                LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-                ORDER BY p.pid
-                """
-            )
-        ]
-
-        analyze = [
-            dict(r)
-            for r in await self.pool.fetch(
-                f"""
-                SELECT
-                    p.pid,
-                    n.nspname AS schema,
-                    c.relname AS table_name,
-                    p.phase,
-                    p.sample_blks_total,
-                    p.sample_blks_scanned,
-                    CASE WHEN p.sample_blks_total > 0
-                        THEN round(100.0 * p.sample_blks_scanned / p.sample_blks_total, 1)
-                    END AS scanned_pct,
-                    p.ext_stats_total,
-                    p.ext_stats_computed,
-                    {delay_column}
-                    p.child_tables_total,
-                    p.child_tables_done
-                FROM pg_stat_progress_analyze p
-                LEFT JOIN pg_class c ON c.oid = p.relid
-                LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-                ORDER BY p.pid
-                """
-            )
-        ]
-
-        create_index = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    p.pid,
-                    n.nspname AS schema,
-                    c.relname AS table_name,
-                    ci.relname AS index_name,
-                    p.command,
-                    p.phase,
-                    p.lockers_total,
-                    p.lockers_done,
-                    p.current_locker_pid,
-                    p.blocks_total,
-                    p.blocks_done,
-                    CASE WHEN p.blocks_total > 0
-                        THEN round(100.0 * p.blocks_done / p.blocks_total, 1)
-                    END AS blocks_pct,
-                    p.tuples_total,
-                    p.tuples_done,
-                    p.partitions_total,
-                    p.partitions_done
-                FROM pg_stat_progress_create_index p
-                LEFT JOIN pg_class c ON c.oid = p.relid
-                LEFT JOIN pg_class ci ON ci.oid = p.index_relid
-                LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-                ORDER BY p.pid
-                """
-            )
-        ]
-
-        cluster = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    p.pid,
-                    n.nspname AS schema,
-                    c.relname AS table_name,
-                    p.command,
-                    p.phase,
-                    p.heap_blks_total,
-                    p.heap_blks_scanned,
-                    CASE WHEN p.heap_blks_total > 0
-                        THEN round(100.0 * p.heap_blks_scanned / p.heap_blks_total, 1)
-                    END AS scanned_pct,
-                    p.heap_tuples_scanned,
-                    p.heap_tuples_written,
-                    p.index_rebuild_count
-                FROM pg_stat_progress_cluster p
-                LEFT JOIN pg_class c ON c.oid = p.relid
-                LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-                ORDER BY p.pid
-                """
-            )
-        ]
-
+        vacuum = await self._fetch(
+            f"""
+            SELECT
+                p.pid,
+                n.nspname AS schema,
+                c.relname AS table_name,
+                p.phase,
+                p.heap_blks_total,
+                p.heap_blks_scanned,
+                CASE WHEN p.heap_blks_total > 0
+                    THEN round(100.0 * p.heap_blks_scanned / p.heap_blks_total, 1)
+                END AS scanned_pct,
+                p.heap_blks_vacuumed,
+                {pg17_vacuum_columns}
+                {delay_column}
+                p.index_vacuum_count
+            FROM pg_stat_progress_vacuum p
+            LEFT JOIN pg_class c ON c.oid = p.relid
+            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+            ORDER BY p.pid
+            """
+        )
+        analyze = await self._fetch(
+            f"""
+            SELECT
+                p.pid,
+                n.nspname AS schema,
+                c.relname AS table_name,
+                p.phase,
+                p.sample_blks_total,
+                p.sample_blks_scanned,
+                CASE WHEN p.sample_blks_total > 0
+                    THEN round(100.0 * p.sample_blks_scanned / p.sample_blks_total, 1)
+                END AS scanned_pct,
+                p.ext_stats_total,
+                p.ext_stats_computed,
+                {delay_column}
+                p.child_tables_total,
+                p.child_tables_done
+            FROM pg_stat_progress_analyze p
+            LEFT JOIN pg_class c ON c.oid = p.relid
+            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+            ORDER BY p.pid
+            """
+        )
+        create_index = await self._fetch(
+            """
+            SELECT
+                p.pid,
+                n.nspname AS schema,
+                c.relname AS table_name,
+                ci.relname AS index_name,
+                p.command,
+                p.phase,
+                p.lockers_total,
+                p.lockers_done,
+                p.current_locker_pid,
+                p.blocks_total,
+                p.blocks_done,
+                CASE WHEN p.blocks_total > 0
+                    THEN round(100.0 * p.blocks_done / p.blocks_total, 1)
+                END AS blocks_pct,
+                p.tuples_total,
+                p.tuples_done,
+                p.partitions_total,
+                p.partitions_done
+            FROM pg_stat_progress_create_index p
+            LEFT JOIN pg_class c ON c.oid = p.relid
+            LEFT JOIN pg_class ci ON ci.oid = p.index_relid
+            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+            ORDER BY p.pid
+            """
+        )
+        cluster = await self._fetch(
+            """
+            SELECT
+                p.pid,
+                n.nspname AS schema,
+                c.relname AS table_name,
+                p.command,
+                p.phase,
+                p.heap_blks_total,
+                p.heap_blks_scanned,
+                CASE WHEN p.heap_blks_total > 0
+                    THEN round(100.0 * p.heap_blks_scanned / p.heap_blks_total, 1)
+                END AS scanned_pct,
+                p.heap_tuples_scanned,
+                p.heap_tuples_written,
+                p.index_rebuild_count
+            FROM pg_stat_progress_cluster p
+            LEFT JOIN pg_class c ON c.oid = p.relid
+            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+            ORDER BY p.pid
+            """
+        )
         return {
             "vacuum": vacuum,
             "analyze": analyze,
@@ -1217,224 +1163,76 @@ class AsyncpgDatabase:
             "cluster": cluster,
         }
 
-    # -- Size & bloat analysis --
-
-    async def table_sizes(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
+    async def replication_status(self) -> dict[str, object]:
+        in_recovery = await self.pool.fetchval("SELECT pg_is_in_recovery()")
+        standbys = await self._fetch(
+            """
+            SELECT
+                pid,
+                usename,
+                application_name,
+                client_addr::text,
+                state,
+                sync_state,
+                write_lag,
+                flush_lag,
+                replay_lag,
+                CASE WHEN pg_is_in_recovery() THEN NULL
+                    ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)
+                END AS replay_lag_bytes
+            FROM pg_stat_replication
+            ORDER BY application_name, pid
+            """
+        )
+        slots = await self._fetch(
+            """
+            SELECT
+                slot_name,
+                slot_type,
+                plugin,
+                database,
+                active,
+                wal_status,
+                safe_wal_size,
+                CASE WHEN pg_is_in_recovery() OR restart_lsn IS NULL THEN NULL
+                    ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)
+                END AS retained_wal_bytes
+            FROM pg_replication_slots
+            ORDER BY slot_name
+            """
+        )
+        version = await self._get_server_version_num()
+        subscriptions: list[dict[str, object]] = []
+        if version >= 150000:
+            # PG18: per-type logical replication conflict counters.
+            conflict_columns = (
                 """
-                SELECT
-                    c.relname AS table_name,
-                    pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size,
-                    pg_size_pretty(pg_table_size(c.oid)) AS table_size,
-                    pg_size_pretty(pg_indexes_size(c.oid)) AS indexes_size,
-                    pg_total_relation_size(c.oid) AS total_bytes
-                FROM pg_class c
-                JOIN pg_namespace n ON c.relnamespace = n.oid
-                WHERE n.nspname = $1 AND c.relkind = 'r'
-                ORDER BY pg_total_relation_size(c.oid) DESC
-                LIMIT $2
-                """,
-                schema,
-                min(max(limit, 1), 1000),
-            )
-        ]
-
-    async def unused_indexes(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
+                confl_insert_exists,
+                confl_update_origin_differs,
+                confl_update_exists,
+                confl_update_missing,
+                confl_delete_origin_differs,
+                confl_delete_missing,
+                confl_multiple_unique_conflicts,
                 """
-                SELECT
-                    s.indexrelname AS index_name,
-                    s.relname AS table_name,
-                    pg_size_pretty(pg_relation_size(s.indexrelid)) AS index_size,
-                    pg_relation_size(s.indexrelid) AS index_bytes,
-                    s.idx_scan AS scans_since_reset,
-                    i.indisvalid AS is_valid,
-                    pg_get_indexdef(s.indexrelid) AS definition
-                FROM pg_stat_user_indexes s
-                JOIN pg_index i ON s.indexrelid = i.indexrelid
-                WHERE s.schemaname = $1
-                    AND s.idx_scan = 0
-                    AND NOT i.indisunique
-                    AND NOT i.indisprimary
-                ORDER BY pg_relation_size(s.indexrelid) DESC
-                LIMIT $2
-                """,
-                schema,
-                min(max(limit, 1), 1000),
+                if version >= 180000
+                else ""
             )
-        ]
-
-    # -- Functions, triggers, policies --
-
-    async def list_functions(
-        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
-    ) -> list[dict[str, object]]:
-        rows = [
-            dict(r)
-            for r in await self.pool.fetch(
+            subscriptions = await self._fetch(
+                f"""
+                SELECT
+                    subname,
+                    apply_error_count,
+                    sync_error_count,
+                    {conflict_columns}
+                    stats_reset
+                FROM pg_stat_subscription_stats
+                ORDER BY subname
                 """
-                SELECT
-                    p.proname AS function_name,
-                    pg_get_function_arguments(p.oid) AS arguments,
-                    pg_get_function_result(p.oid) AS return_type,
-                    l.lanname AS language,
-                    CASE p.provolatile
-                        WHEN 'i' THEN 'immutable'
-                        WHEN 's' THEN 'stable'
-                        WHEN 'v' THEN 'volatile'
-                    END AS volatility,
-                    CASE p.prokind
-                        WHEN 'f' THEN 'function'
-                        WHEN 'p' THEN 'procedure'
-                        WHEN 'a' THEN 'aggregate'
-                        WHEN 'w' THEN 'window'
-                    END AS kind,
-                    obj_description(p.oid) AS description,
-                    p.prosrc AS source
-                FROM pg_proc p
-                JOIN pg_namespace n ON p.pronamespace = n.oid
-                JOIN pg_language l ON p.prolang = l.oid
-                WHERE n.nspname = $1
-                    AND p.prokind != 'a'
-                ORDER BY p.proname
-                LIMIT $2
-                """,
-                schema,
-                min(max(limit, 1), 1000),
             )
-        ]
-        return select_detail(rows, detail, names=("function_name",), heavy=("source",))
-
-    async def list_triggers(self, table_name: str, schema: str) -> list[dict[str, object]]:
-        ref = self.safe_table_ref(schema, table_name)
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    t.tgname AS trigger_name,
-                    pg_get_triggerdef(t.oid) AS definition,
-                    CASE t.tgenabled
-                        WHEN 'O' THEN 'enabled'
-                        WHEN 'D' THEN 'disabled'
-                        WHEN 'R' THEN 'replica'
-                        WHEN 'A' THEN 'always'
-                    END AS status,
-                    p.proname AS function_name
-                FROM pg_trigger t
-                JOIN pg_proc p ON t.tgfoid = p.oid
-                WHERE t.tgrelid = $1::regclass
-                    AND NOT t.tgisinternal
-                ORDER BY t.tgname
-                """,
-                ref,
-            )
-        ]
-
-    async def list_policies(self, table_name: str, schema: str) -> list[dict[str, object]]:
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    pol.polname AS policy_name,
-                    CASE pol.polcmd
-                        WHEN 'r' THEN 'SELECT'
-                        WHEN 'a' THEN 'INSERT'
-                        WHEN 'w' THEN 'UPDATE'
-                        WHEN 'd' THEN 'DELETE'
-                        WHEN '*' THEN 'ALL'
-                    END AS command,
-                    CASE WHEN pol.polpermissive THEN 'permissive'
-                        ELSE 'restrictive'
-                    END AS type,
-                    pg_get_expr(pol.polqual, pol.polrelid) AS using_expression,
-                    pg_get_expr(pol.polwithcheck, pol.polrelid) AS with_check,
-                    array(
-                        SELECT rolname FROM pg_roles
-                        WHERE oid = ANY(pol.polroles)
-                    ) AS roles,
-                    c.relrowsecurity AS rls_enabled,
-                    c.relforcerowsecurity AS rls_forced
-                FROM pg_policy pol
-                JOIN pg_class c ON pol.polrelid = c.oid
-                JOIN pg_namespace n ON c.relnamespace = n.oid
-                WHERE n.nspname = $1 AND c.relname = $2
-                ORDER BY pol.polname
-                """,
-                schema,
-                table_name,
-            )
-        ]
-
-    # -- Sequences & materialized view health --
-
-    async def sequence_health(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
-        return [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    s.sequencename AS sequence_name,
-                    s.last_value,
-                    s.start_value,
-                    s.min_value,
-                    s.max_value,
-                    s.increment_by,
-                    s.cycle AS is_cycled,
-                    CASE WHEN s.max_value != s.min_value AND s.last_value IS NOT NULL
-                        THEN round(
-                            CASE WHEN s.increment_by < 0
-                                THEN 100.0 * (s.max_value - s.last_value)
-                                    / (s.max_value - s.min_value)
-                                ELSE 100.0 * (s.last_value - s.min_value)
-                                    / (s.max_value - s.min_value)
-                            END, 2
-                        )
-                    END AS pct_consumed
-                FROM pg_sequences s
-                WHERE s.schemaname = $1
-                ORDER BY pct_consumed DESC NULLS LAST
-                LIMIT $2
-                """,
-                schema,
-                min(max(limit, 1), 1000),
-            )
-        ]
-
-    async def matview_status(
-        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
-    ) -> list[dict[str, object]]:
-        rows = [
-            dict(r)
-            for r in await self.pool.fetch(
-                """
-                SELECT
-                    m.matviewname AS matview_name,
-                    m.ispopulated,
-                    m.definition,
-                    pg_size_pretty(pg_total_relation_size(
-                        (quote_ident(m.schemaname) || '.' ||
-                         quote_ident(m.matviewname))::regclass
-                    )) AS total_size,
-                    EXISTS (
-                        SELECT 1 FROM pg_index i
-                        WHERE i.indrelid = (
-                            quote_ident(m.schemaname) || '.' ||
-                            quote_ident(m.matviewname)
-                        )::regclass AND i.indisunique
-                    ) AS has_unique_index
-                FROM pg_matviews m
-                WHERE m.schemaname = $1
-                ORDER BY m.matviewname
-                LIMIT $2
-                """,
-                schema,
-                min(max(limit, 1), 1000),
-            )
-        ]
-        return select_detail(rows, detail, names=("matview_name",), heavy=("definition",))
+        return {
+            "in_recovery": in_recovery,
+            "standbys": standbys,
+            "slots": slots,
+            "subscriptions": subscriptions,
+        }
