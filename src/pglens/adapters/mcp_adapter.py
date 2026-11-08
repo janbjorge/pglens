@@ -58,7 +58,7 @@ async def app_lifespan(_server: MCPServer[Databases]) -> AsyncIterator[Databases
                     command_timeout=pool_options.command_timeout,
                 )
             )
-            databases[name] = AsyncpgDatabase(pool)
+            databases[name] = AsyncpgDatabase(pool, max_cell_chars=settings.max_cell_chars)
         yield Databases(databases, aliases.default)
 
 

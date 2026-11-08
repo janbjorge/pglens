@@ -58,6 +58,7 @@ class Settings(BaseSettings):
 
     Every timeout is a whole number of seconds, and ``0`` disables the
     corresponding timeout, matching Postgres semantics for these GUCs.
+    ``max_cell_chars`` follows the same convention: ``0`` disables the cut.
 
     Database selection uses libpq env vars only (no connection strings).
     ``PGHOST``, ``PGUSER``, ``PGPASSWORD``, ``PGSSLMODE`` (etc.) supply host and
@@ -107,6 +108,16 @@ class Settings(BaseSettings):
             "any pending ALTER/DROP/REINDEX, and everything queued behind it) "
             "and would pin the xmin horizon so autovacuum cannot reclaim dead "
             "tuples."
+        ),
+    )
+
+    max_cell_chars: NonNegativeInt = Field(
+        default=1000,
+        description=(
+            "Longest text cell, in characters, that query, sample_rows and "
+            "search_data return. Longer cells are cut and end with a marker "
+            "giving the full length, so one wide json or text column cannot "
+            "flood the model's context. 0 disables the cut."
         ),
     )
 

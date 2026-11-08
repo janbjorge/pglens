@@ -57,7 +57,7 @@ pglens opens read-only connections (`default_transaction_read_only=on`), quotes 
 | Tool | What it does |
 |---|---|
 | `explain_query` | Query plan without execution |
-| `query` | Read-only SQL with limit/offset pagination (default 500 rows) |
+| `query` | Read-only SQL with limit/offset pagination (default 500 rows); long text cells are truncated (see `PGLENS_MAX_CELL_CHARS`) |
 
 ### Performance and health
 
@@ -145,10 +145,11 @@ pglens reads standard PostgreSQL environment variables (libpq). Connection strin
 | `PGLENS_STATEMENT_TIMEOUT` | no (default 60) | Per-statement timeout in seconds; `0` disables it |
 | `PGLENS_LOCK_TIMEOUT` | no (default 5) | How long a statement waits for a lock, in seconds; `0` disables it |
 | `PGLENS_IDLE_TX_TIMEOUT` | no (default 30) | Kills sessions idle inside an open transaction, in seconds; `0` disables it |
+| `PGLENS_MAX_CELL_CHARS` | no (default 1000) | Longest text cell `query`, `sample_rows` and `search_data` return; longer cells are cut and end with `…[truncated, N chars total]`; `0` disables it |
 
 pglens reads no connection-string env vars. Configuration goes through libpq env vars only.
 
-The `PGLENS_*` timeouts are parsed and validated by [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/), so a non-integer or negative value fails at startup with a `ValidationError` naming the field, rather than silently falling back to a default.
+The `PGLENS_*` settings are parsed and validated by [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/), so a non-integer or negative value fails at startup with a `ValidationError` naming the field, rather than silently falling back to a default.
 
 To run pglens directly from a shell (e.g. for testing):
 

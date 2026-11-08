@@ -137,3 +137,26 @@ class TestDatabaseAliases:
         _clear_env(monkeypatch)
         monkeypatch.setenv("PGDATABASE", "MyApp")
         assert Settings().database_aliases == DatabaseAliases(names=["MyApp"], default="MyApp")
+
+
+class TestMaxCellChars:
+    def test_default_is_1000(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        assert Settings().max_cell_chars == 1000
+
+    def test_zero_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGLENS_MAX_CELL_CHARS", "0")
+        assert Settings().max_cell_chars == 0
+
+    def test_rejects_non_integer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGLENS_MAX_CELL_CHARS", "abc")
+        with pytest.raises(ValidationError, match="valid integer"):
+            Settings()
+
+    def test_rejects_negative(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("PGLENS_MAX_CELL_CHARS", "-1")
+        with pytest.raises(ValidationError, match="greater than or equal to 0"):
+            Settings()

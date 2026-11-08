@@ -1,10 +1,11 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
+from pglens.adapters.asyncpg_adapter import AsyncpgDatabase, truncate_cell
 from pglens.core.sql import validate_select
 
 
@@ -839,3 +840,57 @@ class TestFindJoinPath:
         result = await db.find_join_path("a", "b", "public", 99)
         # Should not error — max_depth clamped to 6
         assert result["paths_found"] == 0
+
+
+class TestCellTruncation:
+    """One wide text or json column must not flood the model's context."""
+
+    def test_truncate_cell_cuts_long_strings_and_marks_the_full_length(self) -> None:
+        assert truncate_cell("x" * 5000, 1000) == "x" * 1000 + "…[truncated, 5000 chars total]"
+
+    def test_truncate_cell_leaves_strings_within_the_limit(self) -> None:
+        assert truncate_cell("x" * 1000, 1000) == "x" * 1000
+
+    @pytest.mark.parametrize(
+        "value", [42, 3.5, True, None, b"\x00" * 5000, datetime(2024, 1, 1), ["a" * 50]]
+    )
+    def test_truncate_cell_leaves_non_strings_alone(self, value: object) -> None:
+        assert truncate_cell(value, 1) is value
+
+    def test_zero_disables_the_cut(self) -> None:
+        assert truncate_cell("x" * 5000, 0) == "x" * 5000
+
+    async def test_query_truncates_long_text_cells(self) -> None:
+        conn = mock_conn(fetch_return=[make_record(id=1, body="x" * 5000)])
+        db = AsyncpgDatabase(pool=mock_pool_with_conn(conn))
+
+        [row] = await db.query("SELECT id, body FROM posts")
+
+        assert row["id"] == 1
+        assert row["body"] == "x" * 1000 + "…[truncated, 5000 chars total]"
+
+    async def test_query_with_max_cell_chars_zero_returns_cells_untouched(self) -> None:
+        conn = mock_conn(fetch_return=[make_record(body="x" * 5000)])
+        db = AsyncpgDatabase(pool=mock_pool_with_conn(conn), max_cell_chars=0)
+
+        [row] = await db.query("SELECT body FROM posts")
+
+        assert row["body"] == "x" * 5000
+
+    async def test_sample_rows_truncates(self) -> None:
+        conn = mock_conn(fetch_return=[make_record(bio="y" * 2000)])
+        db = AsyncpgDatabase(pool=mock_pool_with_conn(conn), max_cell_chars=10)
+
+        [row] = await db.sample_rows("users", 1, "public")
+
+        assert row["bio"] == "y" * 10 + "…[truncated, 2000 chars total]"
+
+    async def test_search_data_truncates(self) -> None:
+        conn = mock_conn(fetch_return=[make_record(body="z" * 2000)])
+        pool = mock_pool_with_conn(conn)
+        pool.fetch.return_value = [make_record(safe_name='"body"')]
+        db = AsyncpgDatabase(pool=pool, max_cell_chars=10)
+
+        [row] = await db.search_data("posts", "zz", "public")
+
+        assert row["body"] == "z" * 10 + "…[truncated, 2000 chars total]"

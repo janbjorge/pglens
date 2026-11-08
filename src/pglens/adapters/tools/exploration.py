@@ -23,7 +23,8 @@ async def sample_rows(
     database: Database = None,
 ) -> list[dict[str, object]]:
     """Get random rows from a table to see real data shapes, NULL patterns, and value formats.
-    Useful before writing WHERE clauses or aggregations.
+    Useful before writing WHERE clauses or aggregations. Long text cells are cut and end
+    with "…[truncated, N chars total]".
     """
     return await db(ctx, database).sample_rows(table_name, n, schema)
 
@@ -70,6 +71,7 @@ async def search_data(
 ) -> list[dict[str, object]]:
     """Search for a keyword across all text/varchar columns in a table (case-insensitive).
     Returns up to 50 matching rows. Useful when you know a value exists but not which column.
+    Long text cells are cut and end with "…[truncated, N chars total]".
     """
     return await db(ctx, database).search_data(table_name, keyword, schema)
 

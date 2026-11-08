@@ -9,6 +9,17 @@ import asyncpg
 from pglens.core.sql import quote_ident, validate_select
 
 
+def truncate_cell(value: object, max_chars: int) -> object:
+    """Cut a text cell longer than max_chars and mark it with its full length.
+
+    Only str cells are touched: numbers, bytes, timestamps and NULLs pass
+    through unchanged. max_chars <= 0 disables the cut.
+    """
+    if max_chars > 0 and isinstance(value, str) and len(value) > max_chars:
+        return f"{value[:max_chars]}…[truncated, {len(value)} chars total]"
+    return value
+
+
 def object_type_to_relkind(object_type: str) -> str:
     match object_type:
         case "table":
@@ -33,6 +44,9 @@ class AsyncpgDatabase:
     pool: asyncpg.Pool
     # Cached numeric server version (e.g. 180001). None until first use; injectable in tests.
     server_version_num: int | None = None
+    # Longest text cell returned by the row-returning methods (query, sample_rows,
+    # search_data). Longer cells are cut and marked; 0 disables the cut.
+    max_cell_chars: int = 1000
 
     async def _get_server_version_num(self) -> int:
         if self.server_version_num is None:
@@ -47,6 +61,13 @@ class AsyncpgDatabase:
 
     def safe_column_ref(self, column_name: str) -> str:
         return quote_ident(column_name)
+
+    def _rows(self, records: list[asyncpg.Record]) -> list[dict[str, object]]:
+        """Convert user-data records to dicts, cutting text cells to max_cell_chars."""
+        return [
+            {key: truncate_cell(value, self.max_cell_chars) for key, value in dict(r).items()}
+            for r in records
+        ]
 
     async def database_info(self) -> dict[str, object]:
         row = await self.pool.fetchrow(
@@ -395,7 +416,7 @@ class AsyncpgDatabase:
                     f"SELECT * FROM {ref} ORDER BY random() LIMIT $1",
                     min(max(n, 1), 100),
                 )
-                return [dict(r) for r in rows]
+                return self._rows(rows)
 
     async def column_values(
         self, table_name: str, column_name: str, top_n: int, schema: str
@@ -450,7 +471,7 @@ class AsyncpgDatabase:
                     """,
                     f"%{escaped}%",
                 )
-                return [dict(r) for r in rows]
+                return self._rows(rows)
 
     async def search_columns(self, keyword: str, schema: str) -> list[dict[str, object]]:
         escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -568,7 +589,7 @@ class AsyncpgDatabase:
                     min(max(limit, 1), 500),
                     max(offset, 0),
                 )
-                return [dict(r) for r in rows]
+                return self._rows(rows)
 
     async def list_schemas(self) -> list[dict[str, object]]:
         return [
