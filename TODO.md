@@ -12,7 +12,7 @@ Rules
 
 ## Baseline
 
-| Metric | Value (2026-11-08, after item 1) |
+| Metric | Value (2026-11-08, after items 1-2) |
 |---|---|
 | Tools | 31 |
 | Tool-definition JSON, compact | 32,996 chars (about 8k tokens at 4 chars/token) |
@@ -20,8 +20,8 @@ Rules
 | Largest tools | query 1,770, explain_query 1,578, find_join_path 1,377 |
 | Parameters with a `description` in the schema | 76 of 76 |
 | Tools with annotations | 0 |
-| Server `instructions` | none |
-| `query_guide` prompt | 3,797 chars |
+| Server `instructions` | 2,289 chars |
+| `query_guide` prompt | same text as the instructions |
 
 Measure with:
 
@@ -46,33 +46,6 @@ EOF
 ```
 
 Token figures are chars/4 estimates, not tokenizer counts. Good enough to track direction.
-
-## 2. Add server instructions
-
-Win: high. Effort: small. Claude Code, Claude Desktop, Cursor, any client that forwards `instructions`.
-
-Why
-- `MCPServer("pglens", lifespan=app_lifespan)` at `src/pglens/adapters/mcp_adapter.py:64` passes no `instructions`. The only guidance is the `query_guide` prompt at line 77. MCP prompts are user-controlled, exposed as slash commands; the model never sees them unless a person invokes one. https://modelcontextprotocol.io/specification/2025-11-25/server/prompts
-- Spec on `InitializeResult.instructions`: "Instructions describing how to use the server and its features. ... It can be thought of like a 'hint' to the model. For example, this information MAY be added to the system prompt." https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/2025-11-25/schema.ts
-- Claude Code with tool search (on by default): "Only tool names and server instructions load at session start." Instructions tell Claude when to search for the server's tools. Instructions are cut at 4,096 characters, so put the important part first. https://code.claude.com/docs/en/mcp
-- Observed in a Claude Code session on 2026-11-08: asinterface-docs, logfire and rekal show an "MCP Server Instructions" block; pglens-production and pglens-test show none.
-
-Change
-- Add a module constant `INSTRUCTIONS` in `mcp_adapter.py`, under 4,096 characters, in this order: what pglens is (read-only PostgreSQL introspection, no DDL); when to search for its tools (any question about this database's schema, data, query plans, performance, locks, replication); the 5-step workflow (`database_info`, `list_tables`, `describe_table`, `column_values`, `query`); SQL idioms for `query` (random sample `ORDER BY random() LIMIT 5`, distinct values `GROUP BY 1 ORDER BY count(*) DESC LIMIT 20`, exact count `SELECT count(*)`); the multi-database note (`available_databases`, `database=` argument). Drop the long per-tool catalogue; tool descriptions cover that.
-- Pass it: `MCPServer("pglens", instructions=INSTRUCTIONS, lifespan=app_lifespan)`.
-- `query_guide` returns the same `INSTRUCTIONS` constant so the two cannot drift. Keep the prompt: it is free and some users invoke it.
-
-Regression tests (`tests/test_tool_registration.py`)
-- `test_server_has_instructions`: `mcp.instructions` is non-empty and `len(mcp.instructions) <= 4096`.
-- `test_instructions_name_only_real_tools`: every backticked identifier in the instructions that ends up matching `[a-z_]+` and is not a SQL keyword must be a registered tool name. Guards against stale names after item 7.
-- `test_query_guide_matches_instructions`: `query_guide() == mcp.instructions`.
-
-Done when
-- Baseline script shows `instructions chars` between 1 and 4,096, and a Claude Code session shows an "MCP Server Instructions" block for pglens.
-
-Docs
-- README "There is also a `query_guide` prompt" paragraph: say the same text is sent as server instructions on connect.
-- CLAUDE.md architecture bullet for `mcp_adapter.py`: mention `instructions`.
 
 ## 3. Annotate every tool as read-only
 
@@ -191,7 +164,7 @@ Target surface (adapter methods and their tests stay; only `adapters/tools/*.py`
 | `describe_object` | describe_table, list_triggers, list_policies, object_dependencies | `name`, `kind: Literal["table","view","matview","function","sequence","index"] = "table"`, `schema`, `database`. For `table`: today's `describe_table` dict plus `triggers`, `policies`, `dependents`. Other kinds: `definition` plus `dependents` |
 | `find_join_path` | unchanged | unchanged |
 | `column_profile` | column_values, column_stats | `table_name`, `column_name`, `top_n: TopN = 20`, `schema`, `database`; returns `{"stats": <column_stats>, "top_values": <column_values>}` |
-| `query` | query, sample_rows, search_data | unchanged; sampling and keyword search become SQL idioms in the instructions (item 2) |
+| `query` | query, sample_rows, search_data | unchanged; sampling and keyword search become SQL idioms in the server instructions |
 | `explain_query` | unchanged | unchanged |
 | `health` | table_health, table_sizes, unused_indexes, sequence_health, matview_status, io_stats, slow_queries | `checks: list[Literal["tables","sizes","indexes","sequences","matviews","io","slow_queries"]] | None = None` (None means all), `schema`, `limit: TopQueries = 20` for slow_queries, `database`; returns a dict keyed by check. Use a list of literals, not a comma string, so the schema carries the enum |
 | `activity` | active_queries, blocking_locks, maintenance_progress, replication_status | `views: list[Literal["sessions","locks","maintenance","replication"]] | None = None`, `database`; dict keyed by view |
@@ -214,7 +187,7 @@ Done when
 Docs
 - README: the four tool tables collapse into one 9-row table; the opening line's "31 MCP tools" changes; the `column_values` call-out becomes `column_profile`.
 - CLAUDE.md: "31 tools" in the first paragraph; "Adding a new tool" becomes "Adding a capability": add a db method, then add a `kind`, `check` or `view` literal and its wiring, not a new tool.
-- Instructions (item 2) and `evals/tasks.json` (item 6) updated to the new names.
+- Server instructions (`INSTRUCTIONS` in `mcp_adapter.py`) and `evals/tasks.json` (item 6) updated to the new names.
 
 ## 8. Feature groups, fallback only
 

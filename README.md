@@ -83,7 +83,7 @@ All tools work on a stock PostgreSQL with no extensions. `slow_queries` reads `p
 |---|---|
 | `object_dependencies` | What depends on a given object (views, functions, constraints) |
 
-There is also a `query_guide` prompt that describes a reasonable workflow for using these tools together.
+pglens also sends the client a short set of server instructions on connect: what it is, the workflow for a data question, SQL idioms for `query`, and how to target another database alias. Clients that forward instructions (Claude Code, Claude Desktop, Cursor) give them to the model without anyone invoking a prompt. The same text is available as the `query_guide` prompt.
 
 ## Installation
 
