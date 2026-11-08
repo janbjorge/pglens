@@ -161,7 +161,9 @@ class AsyncpgDatabase:
 
     # -- Catalogue listings, one schema at a time --
 
-    async def list_tables(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
+    async def list_tables(
+        self, schema: str, limit: int = 100, pattern: str | None = None
+    ) -> list[dict[str, object]]:
         return await self._fetch(
             """
             SELECT
@@ -174,15 +176,21 @@ class AsyncpgDatabase:
                 ON s.schemaname = t.table_schema
                 AND s.relname = t.table_name
             WHERE t.table_schema = $1 AND t.table_type = 'BASE TABLE'
+                AND ($2::text IS NULL OR t.table_name ILIKE '%' || $2 || '%')
             ORDER BY s.n_live_tup DESC NULLS LAST
-            LIMIT $2
+            LIMIT $3
             """,
             schema,
+            like_pattern(pattern) if pattern else None,
             limit,
         )
 
     async def list_views(
-        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+        self,
+        schema: str,
+        limit: int = 100,
+        detail: DetailLevel = "summary",
+        pattern: str | None = None,
     ) -> list[dict[str, object]]:
         rows = await self._fetch(
             """
@@ -198,16 +206,22 @@ class AsyncpgDatabase:
                 ) AS definition
             FROM information_schema.views v
             WHERE v.table_schema = $1
+                AND ($2::text IS NULL OR v.table_name ILIKE '%' || $2 || '%')
             ORDER BY v.table_name
-            LIMIT $2
+            LIMIT $3
             """,
             schema,
+            like_pattern(pattern) if pattern else None,
             limit,
         )
         return select_detail(rows, detail, names=("view_name",), heavy=("definition",))
 
     async def matview_status(
-        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+        self,
+        schema: str,
+        limit: int = 100,
+        detail: DetailLevel = "summary",
+        pattern: str | None = None,
     ) -> list[dict[str, object]]:
         rows = await self._fetch(
             """
@@ -228,16 +242,22 @@ class AsyncpgDatabase:
                 ) AS has_unique_index
             FROM pg_matviews m
             WHERE m.schemaname = $1
+                AND ($2::text IS NULL OR m.matviewname ILIKE '%' || $2 || '%')
             ORDER BY m.matviewname
-            LIMIT $2
+            LIMIT $3
             """,
             schema,
+            like_pattern(pattern) if pattern else None,
             limit,
         )
         return select_detail(rows, detail, names=("matview_name",), heavy=("definition",))
 
     async def list_indexes(
-        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+        self,
+        schema: str,
+        limit: int = 100,
+        detail: DetailLevel = "summary",
+        pattern: str | None = None,
     ) -> list[dict[str, object]]:
         rows = await self._fetch(
             """
@@ -262,10 +282,12 @@ class AsyncpgDatabase:
             LEFT JOIN pg_stat_user_indexes s
                 ON s.indexrelid = ix.indexrelid
             WHERE n.nspname = $1
+                AND ($2::text IS NULL OR i.relname ILIKE '%' || $2 || '%')
             ORDER BY t.relname, i.relname
-            LIMIT $2
+            LIMIT $3
             """,
             schema,
+            like_pattern(pattern) if pattern else None,
             limit,
         )
         return select_detail(
@@ -273,7 +295,11 @@ class AsyncpgDatabase:
         )
 
     async def list_functions(
-        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+        self,
+        schema: str,
+        limit: int = 100,
+        detail: DetailLevel = "summary",
+        pattern: str | None = None,
     ) -> list[dict[str, object]]:
         rows = await self._fetch(
             """
@@ -300,15 +326,19 @@ class AsyncpgDatabase:
             JOIN pg_language l ON p.prolang = l.oid
             WHERE n.nspname = $1
                 AND p.prokind != 'a'
+                AND ($2::text IS NULL OR p.proname ILIKE '%' || $2 || '%')
             ORDER BY p.proname
-            LIMIT $2
+            LIMIT $3
             """,
             schema,
+            like_pattern(pattern) if pattern else None,
             limit,
         )
         return select_detail(rows, detail, names=("function_name",), heavy=("source",))
 
-    async def sequence_health(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
+    async def sequence_health(
+        self, schema: str, limit: int = 100, pattern: str | None = None
+    ) -> list[dict[str, object]]:
         return await self._fetch(
             """
             SELECT
@@ -331,10 +361,12 @@ class AsyncpgDatabase:
                 END AS pct_consumed
             FROM pg_sequences s
             WHERE s.schemaname = $1
+                AND ($2::text IS NULL OR s.sequencename ILIKE '%' || $2 || '%')
             ORDER BY pct_consumed DESC NULLS LAST
-            LIMIT $2
+            LIMIT $3
             """,
             schema,
+            like_pattern(pattern) if pattern else None,
             limit,
         )
 

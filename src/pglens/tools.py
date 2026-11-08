@@ -35,8 +35,8 @@ from pglens.types import (
     TopN,
 )
 
-# A name filter is applied after the fetch, so a filtered listing reads a whole
-# catalogue page first. This is the adapter's upper bound on limit.
+# describe_object uses a catalogue page for non-table objects. This is the
+# adapter's upper bound on that page.
 CATALOGUE_PAGE = 1000
 
 HEALTH_CHECKS: tuple[HealthCheck, ...] = (
@@ -89,25 +89,30 @@ async def list_objects(
     kind='table' to see what the database contains.
     """
     source = db(ctx, database)
-    page = CATALOGUE_PAGE if pattern else limit
     rows: list[dict[str, object]]
     name_keys: tuple[str, ...]
     match kind:
         case "table":
-            rows, name_keys = await source.list_tables(schema, page), ("table_name",)
+            rows, name_keys = await source.list_tables(schema, limit, pattern), ("table_name",)
         case "view":
-            rows, name_keys = await source.list_views(schema, page, detail), ("view_name",)
+            rows, name_keys = (
+                await source.list_views(schema, limit, detail, pattern),
+                ("view_name",),
+            )
         case "matview":
-            rows = await source.matview_status(schema, page, detail)
+            rows = await source.matview_status(schema, limit, detail, pattern)
             name_keys = ("matview_name",)
         case "index":
-            rows = await source.list_indexes(schema, page, detail)
+            rows = await source.list_indexes(schema, limit, detail, pattern)
             name_keys = ("index_name", "table_name")
         case "function":
-            rows = await source.list_functions(schema, page, detail)
+            rows = await source.list_functions(schema, limit, detail, pattern)
             name_keys = ("function_name",)
         case "sequence":
-            rows, name_keys = await source.sequence_health(schema, page), ("sequence_name",)
+            rows, name_keys = (
+                await source.sequence_health(schema, limit, pattern),
+                ("sequence_name",),
+            )
         case "enum":
             rows = await source.search_enum_values(pattern or "", schema, limit)
             name_keys = ("enum_name",)
@@ -118,7 +123,7 @@ async def list_objects(
             name_keys = ("table_name", "column_name")
         case _:
             raise ValueError(f"Unknown kind {kind!r}")
-    if pattern and kind not in ("enum", "column"):
+    if pattern and kind == "extension":
         needle = pattern.lower()
         rows = [row for row in rows if needle in str(row[name_keys[0]]).lower()]
     return select_detail(rows[:limit], detail, names=name_keys, heavy=())
