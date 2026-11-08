@@ -1,268 +1,82 @@
 # pglens
 
-Read-only PostgreSQL introspection for AI agents. Nine MCP tools for schema discovery, data exploration, query execution, and health monitoring. Catalogue tools read `pg_catalog` and `information_schema`; query tools can also read application tables.
+Read-only PostgreSQL introspection for AI agents, delivered through MCP.
 
-## Why pglens
+Give an agent schema discovery, join paths, real column values, read-only SQL,
+query plans, and database health checks without giving it write access.
 
-Agents often need column names, enum values, and join paths before they can write a working query. pglens exposes those details alongside query execution.
+## Install
 
-> **`column_profile` in particular:** agents frequently write `WHERE status = 'active'` when the real value is `'Active'` or `'enabled'`. `column_profile` returns the actual distinct values with counts, so the agent picks the right one instead of guessing.
-
-## How it works
-
-```
-AI agent (MCP client)  ──►  pglens  ──►  your PostgreSQL
-   Claude, etc.            MCP server      (read-only)
+```bash
+uvx pglens
 ```
 
-1. Your MCP client (Claude Desktop, Claude Code, Zed, …) launches `pglens` and connects over MCP.
-2. pglens connects to PostgreSQL using standard libpq environment variables and opens a connection pool.
-3. The agent calls pglens tools to introspect the schema, sample data, run read-only queries, and inspect health, instead of guessing.
+Python 3.11+ and a reachable PostgreSQL server are required. To install in an
+environment instead:
 
-pglens opens read-only connections (`default_transaction_read_only=on`), quotes every identifier, and runs each statement under a timeout. It exposes no DDL tools. Catalogue tools use the built-in system catalogs (`pg_catalog` and `information_schema`); `query`, `column_profile`, and `explain_query` may read application tables. See [Safety](#safety).
+```bash
+pip install pglens
+```
 
-## Tools
+## Configure your MCP client
 
-| Tool | What it does |
+Point your client at pglens and pass PostgreSQL's standard `PG*` environment
+variables:
+
+```json
+{
+  "mcpServers": {
+    "pglens": {
+      "command": "uvx",
+      "args": ["pglens"],
+      "env": {
+        "PGHOST": "localhost",
+        "PGPORT": "5432",
+        "PGUSER": "myuser",
+        "PGPASSWORD": "mypassword",
+        "PGDATABASE": "mydb"
+      }
+    }
+  }
+}
+```
+
+[Client examples and configuration reference](docs/configuration.md)
+
+## What agents can do
+
+| Ask | pglens uses |
 |---|---|
-| `database_info` | Server version, database name, current user, `server_encoding`, timezone, uptime, connection limit, database size, schemas with table and view counts, configured database aliases |
-| `list_objects` | One catalogue per call. `kind` is `table`, `view`, `matview`, `index`, `function`, `sequence`, `enum`, `extension` or `column`; `pattern` filters by name (for `column`, searches every table in the schema); `detail` is `names`, `summary` (default) or `full` for definitions and function source; `limit` defaults to 100 |
-| `describe_object` | One object in depth. Tables: columns, types, PKs, FKs in both directions, indexes, check constraints, triggers, row-level security policies and dependents. Views, matviews, functions, sequences and indexes: the full catalogue row plus dependents |
-| `find_join_path` | Multi-hop join paths between two tables via foreign keys |
-| `column_profile` | `stats` (null fraction, distinct count, min, max, common values and correlation from ANALYZE) and `top_values` (distinct values with counts) for one column |
-| `query` | Read-only SQL with limit/offset pagination (default 500 rows); long text cells are truncated (see `PGLENS_MAX_CELL_CHARS`) |
-| `explain_query` | Query plan, optionally with ANALYZE; BUFFERS requires ANALYZE |
-| `health` | `checks`: `tables` (dead tuples, index hit rate, wraparound risk, vacuum timestamps; PostgreSQL 18 adds vacuum timing and frozen fraction), `sizes`, `indexes` (never scanned, with validity reported), `sequences` (consumption), `matviews` (refresh eligibility), `io` (`pg_stat_io`, PostgreSQL 16+), `slow_queries` (`pg_stat_statements`); all seven by default |
-| `activity` | `views`: `sessions`, `locks` (who blocks whom), `maintenance` (running VACUUM, ANALYZE, CREATE INDEX, CLUSTER), `replication` (standby lag, slots, subscription errors); all four by default |
+| What tables, columns, keys, and policies exist? | `list_objects`, `describe_object` |
+| How do these tables join? | `find_join_path` |
+| What values should this filter use? | `column_profile` |
+| What does the data say? | `query`, `explain_query` |
+| Is the database healthy or blocked? | `health`, `activity` |
 
-All tools except `slow_queries` work on a stock PostgreSQL with no extensions. `slow_queries` reads `pg_stat_statements` when installed and otherwise returns installation instructions. Tools adapt to the server version: version-dependent columns (PostgreSQL 18's I/O byte counts, vacuum timing totals, and subscription conflict counts) appear when the server supports them, and older servers get the base column set. On PostgreSQL versions before 16, the `io` check returns an error entry.
+For example, before an agent writes `WHERE status = 'active'`, it can inspect the
+actual values and avoid guessing between `active`, `Active`, and `enabled`.
 
-pglens also sends the client a short set of server instructions on connect: what it is, the workflow for a data question, SQL idioms for `query`, and how to target another database alias. Clients that forward instructions (Claude Code, Claude Desktop, Cursor) give them to the model without anyone invoking a prompt. The same text is available as the `query_guide` prompt.
-
-## Installation
-
-### uvx (recommended)
-
-[uvx](https://docs.astral.sh/uv/) runs pglens straight from PyPI with no install step, always fetching the latest published version:
-
-```bash
-uvx pglens
-```
-
-There is nothing to upgrade; each launch resolves the newest release. Pin a version when you need: `uvx pglens@1.1.0`.
-
-### pip
-
-```bash
-pip install pglens            # install
-pip install --upgrade pglens  # upgrade later
-```
-
-**Requirements:** Python 3.11+ and a reachable PostgreSQL server.
-
-## Configuration
-
-pglens needs two things: PostgreSQL connection details (via libpq env vars) and an entry in your MCP client. A minimal Claude Desktop config:
-
-```json
-{
-  "mcpServers": {
-    "pglens": {
-      "command": "uvx",
-      "args": ["pglens"],
-      "env": {
-        "PGHOST": "localhost",
-        "PGPORT": "5432",
-        "PGUSER": "myuser",
-        "PGPASSWORD": "mypassword",
-        "PGDATABASE": "mydb"
-      }
-    }
-  }
-}
-```
-
-### Connecting to PostgreSQL
-
-pglens reads standard PostgreSQL environment variables (libpq). Connection strings (DSNs) are not supported. Credentials live entirely in `PG*` env vars, so they never appear in arguments or command lines.
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `PGHOST` | usually | Postgres host; libpq may use a local socket when omitted |
-| `PGPORT` | no (default 5432) | Postgres port |
-| `PGUSER` | usually | Username; libpq may use the operating-system user when omitted |
-| `PGPASSWORD` | yes (or `PGPASSFILE`) | Password |
-| `PGDATABASE` | recommended | Primary dbname; also the default alias when a tool is called without `database=` |
-| `PGSSLMODE` | no | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` |
-| `PGSERVICE`, `PGPASSFILE`, `PGAPPNAME`, … | no | Other libpq env vars, honored by asyncpg automatically |
-| `PGLENS_DATABASES` | no | Comma-separated extra dbnames on the same host (see [Multiple databases](#multiple-databases)) |
-| `PGLENS_STATEMENT_TIMEOUT` | no (default 60) | Per-statement timeout in seconds; `0` disables it |
-| `PGLENS_LOCK_TIMEOUT` | no (default 5) | How long a statement waits for a lock, in seconds; `0` disables it |
-| `PGLENS_IDLE_TX_TIMEOUT` | no (default 30) | Kills sessions idle inside an open transaction, in seconds; `0` disables it |
-| `PGLENS_MAX_CELL_CHARS` | no (default 1000) | Longest text cell `query` returns; longer cells are cut and end with `…[truncated, N chars total]`; `0` disables it |
-
-pglens reads no connection-string env vars. Configuration goes through libpq env vars only.
-
-The `PGLENS_*` settings are parsed and validated by [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) when the server starts. A non-integer or negative value raises a `ValidationError` naming the field instead of falling back to a default.
-
-To run pglens directly from a shell (e.g. for testing):
-
-```bash
-export PGHOST=localhost
-export PGUSER=myuser
-export PGPASSWORD=mypassword
-export PGDATABASE=mydb
-uvx pglens
-```
-
-Check the installed version with `pglens --version`.
-
-### MCP clients
-
-If you installed pglens with `pip` instead of using `uvx`, replace `"command": "uvx", "args": ["pglens"]` with `"command": "pglens"` in any of the configs below.
-
-#### Claude Desktop
-
-```json
-{
-  "mcpServers": {
-    "pglens": {
-      "command": "uvx",
-      "args": ["pglens"],
-      "env": {
-        "PGHOST": "localhost",
-        "PGPORT": "5432",
-        "PGUSER": "myuser",
-        "PGPASSWORD": "mypassword",
-        "PGDATABASE": "mydb"
-      }
-    }
-  }
-}
-```
-
-#### Claude Code
-
-```json
-{
-  "mcpServers": {
-    "pglens": {
-      "command": "uvx",
-      "args": ["pglens"],
-      "env": {
-        "PGHOST": "localhost",
-        "PGDATABASE": "mydb"
-      }
-    }
-  }
-}
-```
-
-Claude Code keeps MCP tool definitions behind tool search by default and loads only tool names and server instructions at session start. pglens marks `query`, `describe_object`, `list_objects` and `column_profile` to load upfront, so the common path needs no search step; the other tools load on first use. To keep every pglens tool behind tool search, add `"alwaysLoad": false` to the server entry above (Claude Code v2.1.287 or later).
-
-#### Zed
-
-```json
-{
-  "context_servers": {
-    "pglens": {
-      "command": {
-        "path": "uvx",
-        "args": ["pglens"]
-      }
-    }
-  }
-}
-```
-
-### Multiple databases
-
-Every tool accepts an optional `database` argument to target an alternate connection. This is useful for Postgres setups that expose system metrics in a separate database. Azure Database for PostgreSQL Flexible Server, for example, keeps server metrics in `azure_sys`.
-
-`PGDATABASE` is the primary alias and the default target when a tool is called without `database=`. List any additional dbnames on the same host in `PGLENS_DATABASES`; each becomes its own alias with its own pool. Host, user, password, and TLS mode come from the standard libpq env vars and are shared across every pool:
-
-```json
-{
-  "mcpServers": {
-    "pglens": {
-      "command": "uvx",
-      "args": ["pglens"],
-      "env": {
-        "PGHOST": "myhost.postgres.database.azure.com",
-        "PGPORT": "5432",
-        "PGUSER": "admin",
-        "PGPASSWORD": "...",
-        "PGSSLMODE": "require",
-        "PGDATABASE": "app",
-        "PGLENS_DATABASES": "azure_sys"
-      }
-    }
-  }
-}
-```
-
-- Names are used verbatim as Postgres dbnames, which are case-sensitive (e.g. `PGDATABASE=MyApp` connects to `MyApp`, not `myapp`).
-- If `PGDATABASE` is unset but `PGLENS_DATABASES` is set, the first listed alias becomes the default.
-- If both are unset, a single `default` alias relies on libpq's own default behavior.
-- If the databases you need live on different hosts or require different credentials, run a separate `pglens` server per host with its own `PG*` env block.
-
-Discover what is configured via `database_info` (the `available_databases` key), then pass the alias as the `database` argument:
-
-```text
-database_info() -> {..., "available_databases": ["app", "azure_sys"]}
-health(checks=["sizes"], database="azure_sys")
-query(sql="SELECT * FROM query_store.qs_view LIMIT 10", database="azure_sys")
-```
-
-Omit `database` (or pass `None`) to use `PGDATABASE` (the primary alias).
-
-### Transport
-
-By default the server uses stdio transport (what every MCP client config above expects). To run as an HTTP server for remote use:
-
-```bash
-uvx pglens --transport streamable-http
-```
-
-| Flag | Choices | Default | Description |
-|---|---|---|---|
-| `--transport` | `stdio`, `streamable-http` | `stdio` | MCP transport type |
+[Complete tool reference](docs/tools.md)
 
 ## Safety
 
-- Every connection sets `default_transaction_read_only=on`, so the server itself refuses writes. User-influenced queries also run inside explicit `readonly=True` transactions.
-- Every tool is declared read-only through MCP tool annotations (`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`). Clients that honor them can run pglens calls in parallel or without a confirmation prompt. Annotations are hints; the read-only transactions are the enforcement.
-- pglens parses SQL for `query` and `explain_query` with PostgreSQL's own parser (via pglast) and accepts only a single SELECT statement. It rejects `SELECT INTO`, data-modifying CTEs like `WITH x AS (DELETE ...)`, and multi-statement input before anything reaches the database.
-- The same validation rejects parameter placeholders (`$1`, `$2`). Inline literal values instead.
-- A read-only transaction stops writes to tables, but a SELECT can still call functions with side effects. The validator also rejects calls to a list of them: ending or cancelling other sessions (`pg_terminate_backend`, `pg_cancel_backend`), changing settings (`set_config`, which could lift the statement timeout), advisory locks, statistics resets, replication slot and WAL control, `pg_notify` and `dblink`. The list is a denylist: a view or user-defined function can still wrap one of these, so connect as a role without superuser or `pg_signal_backend`.
-- A statement timeout (`PGLENS_STATEMENT_TIMEOUT`, default 60 s) bounds every query, so a runaway `COUNT(*)` or `EXPLAIN ANALYZE` cannot hog the server.
-- A lock timeout (`PGLENS_LOCK_TIMEOUT`, default 5 s) keeps pglens out of lock queues. Even a plain SELECT takes `ACCESS SHARE`, so without it pglens could sit behind a pending `ALTER TABLE` for the full statement timeout.
-- An idle-in-transaction timeout (`PGLENS_IDLE_TX_TIMEOUT`, default 30 s) covers what the statement timeout cannot: a stalled or disconnected client between `BEGIN` and `COMMIT`. Such a session keeps `ACCESS SHARE` on every table it touched. It can block queued `ALTER`/`DROP`/`REINDEX` operations and later waiters, and it pins the `xmin` horizon so autovacuum cannot reclaim dead tuples anywhere in the cluster.
-- The asyncpg pool carries a client-side command timeout 5 s above the statement timeout, so a blackholed connection (dropped NAT entry, unreachable host) fails instead of leaking a pool slot forever.
-- pglens always quotes table and column identifiers; internal values go through bind parameters.
-- Connections set `application_name = 'pglens'`, which makes them easy to spot in `pg_stat_activity`.
-- pglens exposes no DDL tools.
+pglens sets every database connection to read-only, validates user SQL as a single
+`SELECT`, quotes identifiers, and applies statement and lock timeouts. It exposes no
+DDL tools.
 
-## How it's built
+Read-only access still depends on the PostgreSQL role you configure. Use a role with
+only the data the agent should access.
 
-```
-tools.py      (the nine MCP tool definitions)
-    │
-server.py     (MCPServer, lifespan, pool management)
-    │
-database.py   (SQL queries, asyncpg pool)
-    │
-PostgreSQL
-```
+[Safety model and limits](docs/safety.md)
 
-`AsyncpgDatabase` in `database.py` holds the asyncpg pool and all query methods. The tools in `tools.py` are thin wrappers that register via decorators and delegate to it. Catalogue queries read the built-in system catalogs (`pg_catalog` and `information_schema`), so no PostgreSQL extensions are required.
+## More
 
-`evals/` holds a hand-run eval harness that drives `claude -p` through a set of database questions against a seeded container and records tool choices, tokens and pass rate, so changes to the tool surface can be compared before and after. See [`docs/evaluation.md`](docs/evaluation.md).
-
-**Adding a capability:**
-
-1. Add a method to `AsyncpgDatabase` in `database.py`.
-2. Expose it through an existing tool: a new member of the matching enum in `types.py` and a `match` branch in `tools.py`. Add a new tool only when no existing entry point fits.
+- [Configuration](docs/configuration.md): environment variables, multiple databases,
+  and HTTP transport.
+- [Tools](docs/tools.md): all nine MCP tools and the usual workflow.
+- [Safety](docs/safety.md): enforcement layers and role guidance.
+- [Architecture](docs/architecture.md): design and implementation details.
+- [Evaluation](docs/evaluation.md): tool-surface benchmark harness.
 
 ## License
 
