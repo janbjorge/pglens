@@ -247,23 +247,23 @@ uvx pglens --transport streamable-http
 ## How it's built
 
 ```
-adapters/tools/*.py          (MCP tool definitions, organized by category)
-        │
-adapters/mcp_adapter.py      (MCPServer, lifespan, pool management)
-        │
-adapters/asyncpg_adapter.py  (SQL queries, asyncpg pool)
-        │
-   PostgreSQL
+tools.py      (the nine MCP tool definitions)
+    │
+server.py     (MCPServer, lifespan, pool management)
+    │
+database.py   (SQL queries, asyncpg pool)
+    │
+PostgreSQL
 ```
 
-`AsyncpgDatabase` holds the asyncpg pool and all query methods. Tool modules in `adapters/tools/` are thin wrappers that register MCP tools via decorators and delegate to it. All queries use pure `pg_catalog` introspection, so no PostgreSQL extensions are required.
+`AsyncpgDatabase` in `database.py` holds the asyncpg pool and all query methods. The tools in `tools.py` are thin wrappers that register via decorators and delegate to it. All queries use pure `pg_catalog` introspection, so no PostgreSQL extensions are required.
 
 `evals/` holds a hand-run eval harness that drives `claude -p` through a set of database questions against a seeded container and records tool choices, tokens and pass rate, so changes to the tool surface can be compared before and after. See `evals/README.md`.
 
-**Adding a tool:**
+**Adding a capability:**
 
-1. Add a method to `AsyncpgDatabase` in `adapters/asyncpg_adapter.py`.
-2. Add a `@mcp.tool()` function in the appropriate `adapters/tools/*.py` module.
+1. Add a method to `AsyncpgDatabase` in `database.py`.
+2. Expose it through an existing tool: a new member of the matching enum in `types.py` and a `match` branch in `tools.py`. Add a new tool only when no existing entry point fits.
 
 ## License
 

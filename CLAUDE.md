@@ -25,40 +25,43 @@ uv run ty check
 uv run pytest tests/ -v
 
 # Run a single test
-uv run pytest tests/test_asyncpg_adapter.py::TestSafeRefs::test_safe_table_ref -v
+uv run pytest tests/test_database.py::TestSafeRefs::test_safe_table_ref -v
 ```
 
 ## Architecture
 
 ```
-MCP Tool definitions (adapters/tools/*.py)
-        ↓ call
-MCP Server (adapters/mcp_adapter.py)  ←  lifespan manages asyncpg pool
-        ↓ call
-AsyncpgDatabase (adapters/asyncpg_adapter.py)  ←  all SQL lives here
-        ↓
-asyncpg pool → PostgreSQL (readonly transactions)
+tools.py     the nine MCP tools (thin wrappers, enum dispatch)
+    ↓ call
+server.py    MCPServer, INSTRUCTIONS, lifespan (one asyncpg pool per alias)
+    ↓ call
+database.py  AsyncpgDatabase, where all SQL lives
+    ↓
+asyncpg pool → PostgreSQL (read-only transactions)
 ```
 
-- **`src/pglens/adapters/asyncpg_adapter.py`** — Single file containing all database methods (~30), each a SQL string handed to `_fetch()` (catalogue SQL, values bound as parameters) or `_fetch_user()` (SQL carrying quoted identifiers or a validated SELECT). Connections are read-only at the server level (`default_transaction_read_only=on` via pool `server_settings`, plus `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`, and `application_name=pglens`); `_fetch_user()` also wraps its statement in `transaction(readonly=True)`. The pool also carries a client-side `command_timeout` set above the statement timeout. Identifiers are quoted with `quote_ident()` from `core/sql.py`. `max_cell_chars` (from `Settings`, env `PGLENS_MAX_CELL_CHARS`) caps text cells in `query` via `_rows()`. Schema-wide list methods take `limit` (bound as `LIMIT $n`) and the definition-heavy ones take `detail` (`names`/`summary`/`full`, trimmed by `select_detail()`).
-- **`src/pglens/adapters/mcp_adapter.py`** — Creates the `MCPServer` (mcp 2.x) server with `INSTRUCTIONS` as its server instructions (the `query_guide` prompt returns the same constant, so the two cannot drift), manages the asyncpg pool lifespan, and imports tool modules (which register themselves via decorators at import time).
-- **`src/pglens/adapters/tools/`** — Tool modules organized by category: `schema.py`, `exploration.py`, `query.py`, `health.py`. Each tool is a thin wrapper over one or more `AsyncpgDatabase` methods; the dispatching tools use a `match` on the enum parameter, one branch per member.
-- **`src/pglens/core/types.py`** — `Annotated[T, Field(description=...)]` type aliases (e.g., `Schema`, `TableName`, `SQL`). The mcp SDK builds tool input schemas from pydantic `FieldInfo` only, so a bare string inside `Annotated` is silently dropped; descriptions, `Literal` enums and `ge`/`le` ranges declared here are what the model sees. The SDK enforces the ranges before a tool runs; `AsyncpgDatabase` does not re-check them.
-- **`src/pglens/core/settings.py`** — `Settings`, a pydantic-settings `BaseSettings` holding all configuration (database aliases and timeouts). Parsing and validation are pydantic's; don't hand-roll env parsing. Derived config is exposed as `computed_field` properties returning frozen models (`DatabaseAliases`, `PoolOptions`) — not tuples or dicts. **Instantiated exactly once, in `app_lifespan`, and passed down from there**; nothing else reads the environment, and there is no module-level singleton.
+Six modules under `src/pglens/`, no subpackages.
+
+- **`database.py`** — `AsyncpgDatabase`: all database methods (~30), each a SQL string handed to `_fetch()` (catalogue SQL, values bound as parameters) or `_fetch_user()` (SQL carrying quoted identifiers or a validated SELECT). Connections are read-only at the server level (`default_transaction_read_only=on` via pool `server_settings`, plus `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`, and `application_name=pglens`); `_fetch_user()` also wraps its statement in `transaction(readonly=True)`. The pool also carries a client-side `command_timeout` set above the statement timeout. Identifiers are quoted with `quote_ident()` from `sql.py`. `max_cell_chars` (from `Settings`, env `PGLENS_MAX_CELL_CHARS`) caps text cells in `query` via `_rows()`. Schema-wide list methods take `limit` (bound as `LIMIT $n`) and the definition-heavy ones take `detail` (`names`/`summary`/`full`, trimmed by `select_detail()`).
+- **`server.py`** — Creates the `MCPServer` (mcp 2.x) with `INSTRUCTIONS` as its server instructions (the `query_guide` prompt returns the same constant, so the two cannot drift), the `READ_ONLY` annotations and `ALWAYS_LOAD` meta every tool carries, the `Databases` alias registry with the `db(ctx, database)` helper, and `app_lifespan`, which opens one asyncpg pool per alias.
+- **`tools.py`** — The nine tools. Each is a thin wrapper over one or more `AsyncpgDatabase` methods; the dispatching tools use a `match` on the enum parameter, one branch per member. Decorators register the tools at import time, and `pglens/__init__.py` imports this module, so `from pglens import mcp` is a fully registered server.
+- **`types.py`** — `Annotated[T, Field(description=...)]` type aliases (e.g., `Schema`, `TableName`, `SQL`). The mcp SDK builds tool input schemas from pydantic `FieldInfo` only, so a bare string inside `Annotated` is silently dropped; descriptions, `Literal` enums and `ge`/`le` ranges declared here are what the model sees. The SDK enforces the ranges before a tool runs; `AsyncpgDatabase` does not re-check them.
+- **`settings.py`** — `Settings`, a pydantic-settings `BaseSettings` holding all configuration (database aliases and timeouts). Parsing and validation are pydantic's; don't hand-roll env parsing. Derived config is exposed as `computed_field` properties returning frozen models (`DatabaseAliases`, `PoolOptions`) — not tuples or dicts. **Instantiated exactly once, in `app_lifespan`, and passed down from there**; nothing else reads the environment, and there is no module-level singleton.
+- **`sql.py`** — `quote_ident()` for identifiers and `validate_select()`, which parses user SQL with pglast.
 
 ## Adding a capability
 
-1. Add the database method to `AsyncpgDatabase` in `asyncpg_adapter.py`, with unit tests.
-2. Expose it through an existing tool: add a member to the matching `Literal` in `core/types.py` (`ObjectKind`, `ObjectType`, `HealthCheck`, `ActivityView`) and a `match` branch in the tool in `tools/*.py`.
+1. Add the database method to `AsyncpgDatabase` in `database.py`, with unit tests.
+2. Expose it through an existing tool: add a member to the matching `Literal` in `types.py` (`ObjectKind`, `ObjectType`, `HealthCheck`, `ActivityView`) and a `match` branch in the tool in `tools.py`.
 3. Add a new tool only when no existing entry point fits. `tests/test_tool_registration.py` locks the surface to the expected names, wires every enum member to its database methods, and caps the total definition size.
 
 ## Key conventions
 
-- **SQL safety**: Always use `quote_ident()` (from `core/sql.py`) for identifiers, parameterized queries (`$1`, `$2`) for values, and `readonly=True` transactions. User SQL goes through `validate_select()`, which parses the statement with pglast, rejects anything that is not a single plain SELECT (no multi-statement input, no `SELECT INTO`, no writes hidden in CTEs, no `$n` placeholders), and returns normalized SQL that is safe to embed in a subquery.
-- **Parameter types**: Use the `Annotated` aliases from `core/types.py` for all MCP tool parameters. New aliases need `Field(description=...)`; `tests/test_tool_registration.py` fails on any parameter without a description.
+- **SQL safety**: Always use `quote_ident()` (from `sql.py`) for identifiers, parameterized queries (`$1`, `$2`) for values, and `readonly=True` transactions. User SQL goes through `validate_select()`, which parses the statement with pglast, rejects anything that is not a single plain SELECT (no multi-statement input, no `SELECT INTO`, no writes hidden in CTEs, no `$n` placeholders), and returns normalized SQL that is safe to embed in a subquery.
+- **Parameter types**: Use the `Annotated` aliases from `types.py` for all MCP tool parameters. New aliases need `Field(description=...)`; `tests/test_tool_registration.py` fails on any parameter without a description.
 - **Return values**: Convert asyncpg Records to dicts (`[dict(r) for r in rows]`) for JSON serialization.
 - **Schema default**: Most tools default the schema parameter to `"public"`.
-- **Tool registration**: Tool modules use decorator side effects at import time — they're imported as `import pglens.adapters.tools.schema as _schema` in `mcp_adapter.py`.
+- **Tool registration**: `tools.py` registers tools as a decorator side effect at import time. `pglens/__init__.py` imports it, and Python runs a package's `__init__` before any of its submodules, so every import path ends with a registered server. Keep `server.py` free of imports from `tools.py`.
 - **Testing**: Unit tests mock the asyncpg pool/connection using `make_record(**kwargs)`. Integration tests run against a real PostgreSQL via testcontainers (requires Docker). Tests use `pytest-asyncio` with `asyncio_mode="auto"` and session-scoped event loops.
 
 ## Important

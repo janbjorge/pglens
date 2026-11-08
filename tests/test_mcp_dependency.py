@@ -8,7 +8,7 @@ two are not interchangeable:
   raises ModuleNotFoundError and the server dies at startup (the client sees
   a bare -32000 with no tools).
 - mcp 2.x `Context` is generic over two parameters (lifespan context, request);
-  1.x also took a `ServerSession` parameter, so the alias in mcp_adapter.py
+  1.x also took a `ServerSession` parameter, so the alias in server.py
   raises TypeError at import under 1.x even if the module path resolves.
 
 An unpinned `mcp` dependency lets either edge land on a fresh install or a
@@ -74,7 +74,7 @@ class TestServerApiImportPath:
         mcpserver.Context[dict, object]
 
     def test_adapter_imports_and_builds_server(self) -> None:
-        adapter = importlib.import_module("pglens.adapters.mcp_adapter")
+        adapter = importlib.import_module("pglens.server")
         mcpserver = importlib.import_module("mcp.server.mcpserver")
         assert isinstance(adapter.mcp, mcpserver.MCPServer)
 

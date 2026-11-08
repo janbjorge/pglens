@@ -6,8 +6,8 @@ from typing import cast
 
 import asyncpg
 
-from pglens.core.sql import quote_ident, validate_select
-from pglens.core.types import DetailLevel
+from pglens.sql import quote_ident, validate_select
+from pglens.types import DetailLevel
 
 # describe_object kinds that live in pg_class, mapped to relkind.
 RELKIND = {"table": "r", "view": "v", "matview": "m", "sequence": "S", "index": "i"}

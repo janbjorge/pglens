@@ -1,4 +1,4 @@
-"""MCP server backed by asyncpg."""
+"""The MCP server: lifespan, database registry, instructions and tool metadata."""
 
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -8,8 +8,8 @@ import asyncpg
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
-from pglens.core.settings import DEFAULT_DB, Settings
+from pglens.database import AsyncpgDatabase
+from pglens.settings import DEFAULT_DB, Settings
 
 
 @dataclass
@@ -136,10 +136,3 @@ def databases(ctx: Ctx) -> Databases:
 def query_guide() -> str:
     """Suggested workflow for exploring this database."""
     return INSTRUCTIONS
-
-
-# Register tool modules — each module decorates tools onto `mcp` at import time.
-import pglens.adapters.tools.exploration as _exploration  # noqa: E402, F401
-import pglens.adapters.tools.health as _health  # noqa: E402, F401
-import pglens.adapters.tools.query as _query  # noqa: E402, F401
-import pglens.adapters.tools.schema as _schema  # noqa: E402, F401

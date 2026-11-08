@@ -8,7 +8,7 @@ from collections.abc import Callable
 import pytest
 from pydantic import ValidationError
 
-from pglens.core.settings import DEFAULT_DB, DatabaseAliases, Settings
+from pglens.settings import DEFAULT_DB, DatabaseAliases, Settings
 
 
 def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:

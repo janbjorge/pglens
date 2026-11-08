@@ -10,7 +10,7 @@ import json
 import re
 from pathlib import Path
 
-from pglens.adapters.mcp_adapter import mcp
+from pglens.server import mcp
 
 TASKS = Path(__file__).resolve().parents[1] / "evals" / "tasks.json"
 
