@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is pglens?
 
-A Model Context Protocol (MCP) server that gives AI agents read-only introspection into PostgreSQL databases. 31 tools across schema discovery, data exploration, query execution, and performance monitoring, all using `pg_catalog` with no extensions required (`slow_queries` reads `pg_stat_statements` when installed and returns install instructions when not; `io_stats` needs PostgreSQL 16+ and returns an error entry on older servers).
+A Model Context Protocol (MCP) server that gives AI agents read-only introspection into PostgreSQL databases. Nine tools: `database_info`, `list_objects`, `describe_object`, `find_join_path`, `column_profile`, `query`, `explain_query`, `health` and `activity`, all using `pg_catalog` with no extensions required (the `slow_queries` check of `health` reads `pg_stat_statements` when installed and returns install instructions when not; the `io` check needs PostgreSQL 16+ and returns an error entry on older servers). `list_objects`, `describe_object`, `health` and `activity` dispatch on an enum parameter (`kind`, `checks`, `views`) to the matching `AsyncpgDatabase` methods, so the catalogue stays behind a few entry points.
 
 Tools adapt to the server version: `AsyncpgDatabase` lazily caches `server_version_num` (injectable in tests via the constructor) and selects static SQL fragments per version branch. PostgreSQL 18 adds I/O byte counts, vacuum/analyze timing totals, and subscription conflict counts.
 
@@ -42,14 +42,15 @@ asyncpg pool → PostgreSQL (readonly transactions)
 
 - **`src/pglens/adapters/asyncpg_adapter.py`** — Single file containing all database methods (~30). Connections are read-only at the server level (`default_transaction_read_only=on` via pool `server_settings`, plus `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`, and `application_name=pglens`); user-influenced queries also use `transaction(readonly=True)`. The pool also carries a client-side `command_timeout` set above the statement timeout. Identifiers are quoted with `quote_ident()` from `core/sql.py`. `max_cell_chars` (from `Settings`, env `PGLENS_MAX_CELL_CHARS`) caps text cells in the row-returning methods `query`, `sample_rows` and `search_data` via `_rows()`. Schema-wide list methods take `limit` (bound as `LIMIT $n`) and the definition-heavy ones take `detail` (`names`/`summary`/`full`, trimmed by `select_detail()`).
 - **`src/pglens/adapters/mcp_adapter.py`** — Creates the `MCPServer` (mcp 2.x) server with `INSTRUCTIONS` as its server instructions (the `query_guide` prompt returns the same constant, so the two cannot drift), manages the asyncpg pool lifespan, and imports tool modules (which register themselves via decorators at import time).
-- **`src/pglens/adapters/tools/`** — Tool modules organized by category: `schema.py`, `exploration.py`, `query.py`, `health.py`, `safety.py`. Each tool is a thin wrapper that calls the corresponding `AsyncpgDatabase` method.
+- **`src/pglens/adapters/tools/`** — Tool modules organized by category: `schema.py`, `exploration.py`, `query.py`, `health.py`. Each tool is a thin wrapper over one or more `AsyncpgDatabase` methods; the dispatching tools use a `match` on the enum parameter, one branch per member.
 - **`src/pglens/core/types.py`** — `Annotated[T, Field(description=...)]` type aliases (e.g., `Schema`, `TableName`, `SQL`). The mcp SDK builds tool input schemas from pydantic `FieldInfo` only, so a bare string inside `Annotated` is silently dropped; descriptions, `Literal` enums and `ge`/`le` ranges declared here are what the model sees. Ranges mirror the clamps in `AsyncpgDatabase`.
 - **`src/pglens/core/settings.py`** — `Settings`, a pydantic-settings `BaseSettings` holding all configuration (database aliases and timeouts). Parsing and validation are pydantic's; don't hand-roll env parsing. Derived config is exposed as `computed_field` properties returning frozen models (`DatabaseAliases`, `PoolOptions`) — not tuples or dicts. **Instantiated exactly once, in `app_lifespan`, and passed down from there**; nothing else reads the environment, and there is no module-level singleton.
 
-## Adding a new tool
+## Adding a capability
 
-1. Add the database method to `AsyncpgDatabase` in `asyncpg_adapter.py`
-2. Add an MCP tool decorator in the appropriate `tools/*.py` module
+1. Add the database method to `AsyncpgDatabase` in `asyncpg_adapter.py`, with unit tests.
+2. Expose it through an existing tool: add a member to the matching `Literal` in `core/types.py` (`ObjectKind`, `ObjectType`, `HealthCheck`, `ActivityView`) and a `match` branch in the tool in `tools/*.py`.
+3. Add a new tool only when no existing entry point fits. `tests/test_tool_registration.py` locks the surface to the expected names, wires every enum member to its database methods, and caps the total definition size.
 
 ## Key conventions
 

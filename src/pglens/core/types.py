@@ -36,40 +36,12 @@ SQL = Annotated[
             "Read-only SQL SELECT statement. Inline literal values directly; parameter "
             "placeholders ($1, $2) are not supported and are rejected. "
             "Prefer specific columns over SELECT *. "
-            "Use JOINs from describe_table (foreign_keys/referenced_by) or find_join_path output."
-        )
-    ),
-]
-
-ColumnKeyword = Annotated[
-    str,
-    Field(
-        description=(
-            "Substring to match against column names, case-insensitive. "
-            "e.g. 'email', 'status', 'created'."
+            "Use JOINs from describe_object (foreign_keys/referenced_by) or find_join_path output."
         )
     ),
 ]
 
 ColumnName = Annotated[str, Field(description="Exact column name to inspect")]
-
-EnumKeyword = Annotated[
-    str,
-    Field(
-        description=(
-            "Substring to match against enum type names, case-insensitive. "
-            "Pass empty string to list all enums."
-        )
-    ),
-]
-
-SearchKeyword = Annotated[
-    str, Field(description="Text to search for (case-insensitive substring match)")
-]
-
-SampleSize = Annotated[
-    int, Field(ge=1, le=100, description="Number of sample rows to return (1-100)")
-]
 
 TopN = Annotated[
     int,
@@ -80,29 +52,57 @@ TopN = Annotated[
     ),
 ]
 
-TopQueries = Annotated[
+HealthLimit = Annotated[
     int,
     Field(
         ge=1,
         le=100,
         description=(
-            "Number of statements to return, ordered by total execution time descending (1-100)."
+            "Rows per check (1-100): the top statements for slow_queries, the largest or "
+            "most at-risk objects for the other checks."
         ),
     ),
 ]
 
 ObjectName = Annotated[
     str,
-    Field(
-        description=(
-            "Name of a database object (table, view, function, etc.) to inspect dependencies for."
-        )
-    ),
+    Field(description="Name of the object to describe, without schema prefix, e.g. 'orders'."),
 ]
 
 ObjectType = Annotated[
     Literal["table", "view", "matview", "function", "sequence", "index"],
-    Field(description="Type of the database object named by object_name."),
+    Field(description="Kind of the object named by name."),
+]
+
+ObjectKind = Annotated[
+    Literal[
+        "table", "view", "matview", "index", "function", "sequence", "enum", "extension", "column"
+    ],
+    Field(description="Which catalogue to list."),
+]
+
+NamePattern = Annotated[
+    str | None,
+    Field(
+        description=(
+            "Case-insensitive substring to match on the object name; for kind='column' and "
+            "kind='enum' it is the search keyword. None lists everything."
+        )
+    ),
+]
+
+HealthCheck = Literal["tables", "sizes", "indexes", "sequences", "matviews", "io", "slow_queries"]
+
+HealthChecks = Annotated[
+    list[HealthCheck] | None,
+    Field(description="Checks to run, in this order. None runs all seven."),
+]
+
+ActivityView = Literal["sessions", "locks", "maintenance", "replication"]
+
+ActivityViews = Annotated[
+    list[ActivityView] | None,
+    Field(description="Views to return, in this order. None returns all four."),
 ]
 
 SourceTable = Annotated[
@@ -182,11 +182,8 @@ Offset = Annotated[
     Field(
         ge=0,
         description=(
-            "Number of rows to skip before returning results (default 0). "
-            "Warning: large offsets cause PostgreSQL to scan and discard rows, degrading "
-            "performance. For paginating large result sets, prefer keyset pagination using "
-            "WHERE clauses (e.g. WHERE id > last_seen_id ORDER BY id) instead of increasing "
-            "offset."
+            "Rows to skip before returning results (default 0). Large offsets make PostgreSQL "
+            "scan and discard rows; prefer keyset pagination (WHERE id > last_seen_id ORDER BY id)."
         ),
     ),
 ]

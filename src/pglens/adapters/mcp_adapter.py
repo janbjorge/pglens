@@ -72,38 +72,36 @@ question about this database's tables, columns, values, relationships, query pla
 slow queries, locks, replication or maintenance, instead of guessing from application code.
 
 Workflow for a data question:
-1. `database_info` for the PostgreSQL version, the database name and the configured aliases.
-2. `list_tables` to see what exists; `list_schemas` first when the data may live outside
-   public.
-3. `describe_table` for column names, types, primary and foreign keys and indexes before
-   writing any query against a table.
-4. `column_values` before filtering on status, type or category columns, so WHERE clauses
-   use values that exist. `column_stats` for numeric and date columns.
-5. `query` for read-only SQL, capped at 500 rows. `explain_query` first when a query may be
-   expensive.
+1. `database_info` for the PostgreSQL version, the schemas and the configured aliases.
+2. `list_objects` with kind='table' to see what exists; kind='column' with a pattern
+   finds a column by name across all tables.
+3. `describe_object` on each table you will query: columns, keys, foreign keys in both
+   directions, indexes, triggers and row-level security policies.
+4. `column_profile` before filtering on status, type or category columns, so WHERE
+   clauses use values that exist; it also gives the range of numeric and date columns.
+5. `query` for read-only SQL, capped at 500 rows. `explain_query` first when a query may
+   be expensive. `find_join_path` when two tables are several foreign keys apart.
 
 SQL idioms for `query` (inline literal values; $1 placeholders are rejected):
 - random sample: SELECT col_a, col_b FROM t ORDER BY random() LIMIT 5
+- keyword search: SELECT * FROM t WHERE col_a ILIKE '%needle%' OR col_b ILIKE '%needle%'
 - distinct values with counts: SELECT status, count(*) FROM t GROUP BY 1 ORDER BY 2 DESC
   LIMIT 20
-- exact row count: SELECT count(*) FROM t (list_tables shows estimates that can be stale)
+- exact row count: SELECT count(*) FROM t (list_objects shows estimates that can be stale)
 - large results: keyset pagination, WHERE id > last_seen_id ORDER BY id LIMIT 500, not a
   growing OFFSET
 
-Other tools: `find_join_path` for tables several foreign keys apart; `sample_rows`,
-`search_data`, `search_columns` and `search_enum_values` for exploration; `list_views`,
-`list_indexes`, `list_functions`, `list_triggers`, `list_policies` and `list_extensions`
-for schema detail; `object_dependencies` before suggesting any DROP or ALTER;
-`slow_queries`, `table_health`, `table_sizes`, `unused_indexes`, `sequence_health`,
-`matview_status` and `io_stats` for health; `active_queries`, `blocking_locks`,
-`maintenance_progress` and `replication_status` for what is happening right now.
+Health and activity: `health` runs the checks tables, sizes, indexes, sequences, matviews,
+io and slow_queries (all by default, or name the ones you need); `activity` shows sessions,
+locks, maintenance progress and replication. `describe_object` lists dependents; check
+them before suggesting any DROP or ALTER.
 
 Multiple databases: `database_info` returns available_databases, the configured aliases.
 Pass one of them as the database argument on any tool to target it; the default is the
 primary alias.
 
-Row-level security can hide rows: check `list_policies` when a query returns fewer rows
-than expected.
+Row-level security can hide rows: `describe_object` shows a table's policies when a query
+returns fewer rows than expected.
 """
 
 mcp = MCPServer("pglens", instructions=INSTRUCTIONS, lifespan=app_lifespan)
@@ -144,5 +142,4 @@ def query_guide() -> str:
 import pglens.adapters.tools.exploration as _exploration  # noqa: E402, F401
 import pglens.adapters.tools.health as _health  # noqa: E402, F401
 import pglens.adapters.tools.query as _query  # noqa: E402, F401
-import pglens.adapters.tools.safety as _safety  # noqa: E402, F401
 import pglens.adapters.tools.schema as _schema  # noqa: E402, F401

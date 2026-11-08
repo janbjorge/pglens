@@ -1,6 +1,6 @@
 # pglens
 
-Read-only PostgreSQL introspection for AI agents. 31 MCP tools for schema discovery, data exploration, query execution, and health monitoring. Pure `pg_catalog`, no extensions required.
+Read-only PostgreSQL introspection for AI agents. Nine MCP tools for schema discovery, data exploration, query execution, and health monitoring. Pure `pg_catalog`, no extensions required.
 
 ## Why pglens
 
@@ -8,7 +8,7 @@ Most Postgres MCP servers expose `query` and `list_tables`, and little else. Age
 
 pglens closes those gaps. The agent can check what values actually exist in a column, discover foreign-key relationships, preview sample data, and validate a query plan before running it.
 
-> **`column_values` in particular:** agents frequently write `WHERE status = 'active'` when the real value is `'Active'` or `'enabled'`. `column_values` returns the actual distinct values with counts, so the agent picks the right one instead of guessing.
+> **`column_profile` in particular:** agents frequently write `WHERE status = 'active'` when the real value is `'Active'` or `'enabled'`. `column_profile` returns the actual distinct values with counts, so the agent picks the right one instead of guessing.
 
 ## How it works
 
@@ -25,65 +25,19 @@ pglens opens read-only connections (`default_transaction_read_only=on`), quotes 
 
 ## Tools
 
-### Schema and discovery
-
 | Tool | What it does |
 |---|---|
-| `database_info` | Server version, database name, current user, encoding, timezone, uptime, size, configured database aliases |
-| `list_schemas` | Schemas with table and view counts |
-| `list_tables` | Tables with row counts and descriptions |
-| `list_views` | Views with descriptions; SQL definitions with `detail=full` |
-| `list_extensions` | Installed extensions and versions |
-| `describe_table` | Columns, types, PKs, FKs (both directions), indexes, check constraints; `detail=full` adds index definitions, `detail=names` only column names and keys |
+| `database_info` | Server version, database name, current user, encoding, timezone, uptime, size, schemas with table and view counts, configured database aliases |
+| `list_objects` | One catalogue per call. `kind` is `table`, `view`, `matview`, `index`, `function`, `sequence`, `enum`, `extension` or `column`; `pattern` filters by name (for `column`, searches every table in the schema); `detail` is `names`, `summary` (default) or `full` for definitions and function source; `limit` defaults to 100 |
+| `describe_object` | One object in depth. Tables: columns, types, PKs, FKs in both directions, indexes, check constraints, triggers, row-level security policies and dependents. Views, matviews, functions, sequences and indexes: the full catalogue row plus dependents |
 | `find_join_path` | Multi-hop join paths between two tables via foreign keys |
-| `list_indexes` | All indexes across a schema with types, sizes, validity, and usage stats; definitions with `detail=full` |
-| `list_functions` | Stored functions/procedures; source code with `detail=full` |
-| `list_triggers` | Triggers on a table with definitions and status |
-| `list_policies` | Row-level security policies on a table |
-
-Schema-wide list tools (`list_tables`, `list_views`, `list_indexes`, `list_functions`, `search_columns`, `table_health`, `table_sizes`, `unused_indexes`, `sequence_health`, `matview_status`) take a `limit` argument: 100 rows by default, 1000 at most. `list_views`, `list_indexes`, `list_functions`, `matview_status` and `describe_table` also take `detail`: `names` (identifiers only), `summary` (the default, without definitions and source code) or `full`.
-
-### Data exploration
-
-| Tool | What it does |
-|---|---|
-| `sample_rows` | Random rows from a table |
-| `column_values` | Distinct values with frequency counts |
-| `column_stats` | Min, max, null fraction, distinct count, common values |
-| `search_data` | Case-insensitive search across text columns |
-| `search_columns` | Find columns by name across all tables |
-| `search_enum_values` | Enum types and their allowed values |
-
-### Query execution
-
-| Tool | What it does |
-|---|---|
-| `explain_query` | Query plan without execution |
+| `column_profile` | `stats` (null fraction, distinct count, min, max, common values and correlation from ANALYZE) and `top_values` (distinct values with counts) for one column |
 | `query` | Read-only SQL with limit/offset pagination (default 500 rows); long text cells are truncated (see `PGLENS_MAX_CELL_CHARS`) |
+| `explain_query` | Query plan, optionally with ANALYZE and BUFFERS |
+| `health` | `checks`: `tables` (dead tuples, index hit rate, wraparound risk, vacuum timestamps; PostgreSQL 18 adds vacuum timing and frozen fraction), `sizes`, `indexes` (never scanned or invalid), `sequences` (consumption), `matviews` (refresh eligibility), `io` (`pg_stat_io`, PostgreSQL 16+), `slow_queries` (`pg_stat_statements`); all seven by default |
+| `activity` | `views`: `sessions`, `locks` (who blocks whom), `maintenance` (running VACUUM, ANALYZE, CREATE INDEX, CLUSTER), `replication` (standby lag, slots, subscription errors); all four by default |
 
-### Performance and health
-
-| Tool | What it does |
-|---|---|
-| `slow_queries` | Top statements by total execution time (needs `pg_stat_statements`; parallel-worker and WAL-buffer stats on PostgreSQL 18) |
-| `table_health` | Index hit rates, dead tuples, vacuum timestamps, wraparound risk (cumulative vacuum/analyze time and frozen-page fraction on PostgreSQL 18+) |
-| `table_sizes` | Disk usage per table, ranked by size |
-| `unused_indexes` | Indexes that are never scanned, including invalid ones |
-| `active_queries` | Currently running sessions and their queries |
-| `blocking_locks` | Lock wait chains (who blocks whom) |
-| `replication_status` | Standby lag, replication slots (inactive slots retain WAL), and subscription error/conflict counts |
-| `sequence_health` | Sequences approaching exhaustion |
-| `matview_status` | Materialized view freshness and refresh eligibility; definitions with `detail=full` |
-| `io_stats` | Cluster-wide I/O from `pg_stat_io` by backend type, object, and context (PostgreSQL 16+; byte counts and WAL rows on 18+) |
-| `maintenance_progress` | Live progress of running VACUUM, ANALYZE, CREATE INDEX, and CLUSTER operations |
-
-All tools work on a stock PostgreSQL with no extensions. `slow_queries` reads `pg_stat_statements` when it is installed and returns install instructions when it is not. Tools adapt to the server version: version-dependent columns (PostgreSQL 18's I/O byte counts, vacuum timing totals, and subscription conflict counts) appear when the server supports them, and older servers get the base column set. `io_stats` requires PostgreSQL 16+.
-
-### Safety before DDL
-
-| Tool | What it does |
-|---|---|
-| `object_dependencies` | What depends on a given object (views, functions, constraints) |
+All tools work on a stock PostgreSQL with no extensions. The `slow_queries` check reads `pg_stat_statements` when it is installed and returns install instructions when it is not. Tools adapt to the server version: version-dependent columns (PostgreSQL 18's I/O byte counts, vacuum timing totals, and subscription conflict counts) appear when the server supports them, and older servers get the base column set. The `io` check requires PostgreSQL 16+.
 
 pglens also sends the client a short set of server instructions on connect: what it is, the workflow for a data question, SQL idioms for `query`, and how to target another database alias. Clients that forward instructions (Claude Code, Claude Desktop, Cursor) give them to the model without anyone invoking a prompt. The same text is available as the `query_guide` prompt.
 
@@ -206,7 +160,7 @@ If you installed pglens with `pip` instead of using `uvx`, replace `"command": "
 }
 ```
 
-Claude Code keeps MCP tool definitions behind tool search by default and loads only tool names and server instructions at session start. pglens marks `query`, `describe_table`, `list_tables` and `column_values` to load upfront, so the common path needs no search step; the other tools load on first use. To keep every pglens tool behind tool search, add `"alwaysLoad": false` to the server entry above (Claude Code v2.1.287 or later).
+Claude Code keeps MCP tool definitions behind tool search by default and loads only tool names and server instructions at session start. pglens marks `query`, `describe_object`, `list_objects` and `column_profile` to load upfront, so the common path needs no search step; the other tools load on first use. To keep every pglens tool behind tool search, add `"alwaysLoad": false` to the server entry above (Claude Code v2.1.287 or later).
 
 #### Zed
 

@@ -1,12 +1,13 @@
-"""Verify all MCP tools are registered and wired correctly.
+"""The MCP tool surface: which tools exist, how they delegate, and what the schema says.
 
-These tests catch:
-- Missing imports in mcp_adapter.py (tool silently not registered)
-- Decorator typos or misconfigurations
-- Parameter name mismatches between tool layer and AsyncpgDatabase
+These tests catch a tool module that is no longer imported, an enum member that
+is not wired to a database method, a parameter that reaches the client without a
+description, and regrowth of the tool-definition budget.
 """
 
+import json
 import re
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,65 +16,39 @@ from mcp.types import ListToolsResult
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
 from pglens.adapters.mcp_adapter import mcp, query_guide
 
-# Every tool that should be registered, mapped to the db method it delegates to.
-# Tools that do not delegate to AsyncpgDatabase (e.g. registry-level tools) map to None.
-EXPECTED_TOOLS: dict[str, str | None] = {
-    # schema.py
-    "database_info": "database_info",
-    "list_schemas": "list_schemas",
-    "list_tables": "list_tables",
-    "list_views": "list_views",
-    "list_extensions": "list_extensions",
-    "describe_table": "describe_table",
-    "find_join_path": "find_join_path",
-    "list_indexes": "list_indexes",
-    "list_functions": "list_functions",
-    "list_triggers": "list_triggers",
-    "list_policies": "list_policies",
-    # exploration.py
-    "sample_rows": "sample_rows",
-    "column_values": "column_values",
-    "column_stats": "column_stats",
-    "search_data": "search_data",
-    "search_columns": "search_columns",
-    "search_enum_values": "search_enum_values",
-    # query.py
-    "explain_query": "explain_query",
-    "query": "query",
-    # health.py
-    "table_health": "table_health",
-    "table_sizes": "table_sizes",
-    "unused_indexes": "unused_indexes",
-    "slow_queries": "slow_queries",
-    "replication_status": "replication_status",
-    "active_queries": "active_queries",
-    "blocking_locks": "blocking_locks",
-    "sequence_health": "sequence_health",
-    "matview_status": "matview_status",
-    "io_stats": "io_stats",
-    "maintenance_progress": "maintenance_progress",
-    # safety.py
-    "object_dependencies": "object_dependencies",
+EXPECTED_TOOLS = {
+    "database_info",
+    "list_objects",
+    "describe_object",
+    "find_join_path",
+    "column_profile",
+    "query",
+    "explain_query",
+    "health",
+    "activity",
 }
+TOOL_MODULES = ("schema", "exploration", "query", "health")
+# Compact JSON of every tool definition. Measured after the consolidation; stops regrowth.
+DEFINITION_BUDGET_CHARS = 16_000
 
 
 def _registered_tool_names() -> set[str]:
-    """Extract tool names from the MCP server."""
-    # MCPServer stores tools in _tool_manager._tools dict
-    tools = mcp._tool_manager._tools
-    return set(tools.keys())
+    return set(mcp._tool_manager._tools)
 
 
 class TestToolRegistration:
-    def test_all_expected_tools_registered(self) -> None:
-        registered = _registered_tool_names()
-        missing = set(EXPECTED_TOOLS) - registered
-        assert not missing, f"Tools not registered: {missing}"
+    def test_surface_is_exactly_the_expected_tools(self) -> None:
+        assert _registered_tool_names() == EXPECTED_TOOLS
 
-    def test_no_unexpected_tools(self) -> None:
-        registered = _registered_tool_names()
-        unexpected = registered - set(EXPECTED_TOOLS)
-        assert not unexpected, f"Unexpected tools registered: {unexpected}"
+    async def test_tool_count(self) -> None:
+        assert len(await mcp.list_tools()) <= 10
+
+    async def test_tool_definition_budget(self) -> None:
+        total = sum(
+            len(json.dumps(t.model_dump(exclude_none=True, by_alias=True), separators=(",", ":")))
+            for t in await mcp.list_tools()
+        )
+        assert total < DEFINITION_BUDGET_CHARS, total
 
 
 def _make_ctx(mock_db: MagicMock) -> MagicMock:
@@ -83,110 +58,218 @@ def _make_ctx(mock_db: MagicMock) -> MagicMock:
     return ctx
 
 
+def _mock_db() -> AsyncMock:
+    """An AsyncpgDatabase stand-in whose methods return empty results of the right shape."""
+    # spec= ensures only real methods exist, so a typo raises AttributeError.
+    mock_db = AsyncMock(spec=AsyncpgDatabase)
+    mock_db.database_info.return_value = {}
+    mock_db.describe_table.return_value = {}
+    mock_db.column_stats.return_value = {}
+    mock_db.replication_status.return_value = {}
+    mock_db.maintenance_progress.return_value = {}
+    mock_db.find_join_path.return_value = {}
+    mock_db.explain_query.return_value = ""
+    mock_db.list_schemas.return_value = []
+    mock_db.list_tables.return_value = []
+    mock_db.list_views.return_value = []
+    mock_db.list_indexes.return_value = []
+    mock_db.list_functions.return_value = []
+    mock_db.list_extensions.return_value = []
+    mock_db.list_triggers.return_value = []
+    mock_db.list_policies.return_value = []
+    mock_db.search_columns.return_value = []
+    mock_db.search_enum_values.return_value = []
+    mock_db.matview_status.return_value = []
+    mock_db.sequence_health.return_value = []
+    mock_db.column_values.return_value = []
+    mock_db.query.return_value = []
+    mock_db.table_health.return_value = []
+    mock_db.table_sizes.return_value = []
+    mock_db.unused_indexes.return_value = []
+    mock_db.io_stats.return_value = []
+    mock_db.slow_queries.return_value = []
+    mock_db.active_queries.return_value = []
+    mock_db.blocking_locks.return_value = []
+    mock_db.object_dependencies.return_value = []
+    return mock_db
+
+
+async def _run(tool_name: str, mock_db: AsyncMock, **kwargs: object) -> object:
+    """Call a tool function with every tool module's db() patched to mock_db."""
+    tool = mcp._tool_manager._tools[tool_name]
+    mock_registry = MagicMock()
+    mock_registry.names.return_value = ["default"]
+    patches = [
+        patch(f"pglens.adapters.tools.{mod}.db", return_value=mock_db) for mod in TOOL_MODULES
+    ]
+    patches.append(patch("pglens.adapters.tools.schema.databases", return_value=mock_registry))
+    for p in patches:
+        p.start()
+    try:
+        return await tool.fn(ctx=_make_ctx(mock_db), **kwargs)
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def _called(mock_db: AsyncMock) -> list[str]:
+    return [name for name, _args, _kwargs in mock_db.method_calls]
+
+
 class TestToolWiring:
-    """Verify each tool delegates to the correct AsyncpgDatabase method with the right args."""
+    """Every tool, and every enum member of the dispatching tools, reaches the right
+    AsyncpgDatabase methods in the documented order."""
 
     @pytest.mark.parametrize(
-        "tool_name, db_method, kwargs",
+        ("tool_name", "kwargs", "expected_methods"),
         [
-            ("database_info", "database_info", {}),
-            ("list_schemas", "list_schemas", {}),
-            ("list_tables", "list_tables", {"schema": "public"}),
-            ("list_views", "list_views", {"schema": "myschema"}),
-            ("list_extensions", "list_extensions", {}),
-            ("describe_table", "describe_table", {"table_name": "orders", "schema": "public"}),
+            ("database_info", {}, ["database_info", "list_schemas"]),
+            ("list_objects", {"kind": "table"}, ["list_tables"]),
+            ("list_objects", {"kind": "view"}, ["list_views"]),
+            ("list_objects", {"kind": "matview"}, ["matview_status"]),
+            ("list_objects", {"kind": "index"}, ["list_indexes"]),
+            ("list_objects", {"kind": "function"}, ["list_functions"]),
+            ("list_objects", {"kind": "sequence"}, ["sequence_health"]),
+            ("list_objects", {"kind": "enum"}, ["search_enum_values"]),
+            ("list_objects", {"kind": "extension"}, ["list_extensions"]),
+            ("list_objects", {"kind": "column", "pattern": "email"}, ["search_columns"]),
+            (
+                "describe_object",
+                {"name": "orders"},
+                ["describe_table", "list_triggers", "list_policies", "object_dependencies"],
+            ),
+            (
+                "describe_object",
+                {"name": "v", "kind": "view"},
+                ["list_views", "object_dependencies"],
+            ),
+            (
+                "describe_object",
+                {"name": "m", "kind": "matview"},
+                ["matview_status", "object_dependencies"],
+            ),
+            (
+                "describe_object",
+                {"name": "f", "kind": "function"},
+                ["list_functions", "object_dependencies"],
+            ),
+            (
+                "describe_object",
+                {"name": "s", "kind": "sequence"},
+                ["sequence_health", "object_dependencies"],
+            ),
+            (
+                "describe_object",
+                {"name": "i", "kind": "index"},
+                ["list_indexes", "object_dependencies"],
+            ),
             (
                 "find_join_path",
-                "find_join_path",
-                {
-                    "source_table": "users",
-                    "target_table": "items",
-                    "schema": "public",
-                    "max_depth": 4,
-                },
-            ),
-            ("list_indexes", "list_indexes", {"schema": "public"}),
-            ("list_functions", "list_functions", {"schema": "public"}),
-            ("list_triggers", "list_triggers", {"table_name": "orders", "schema": "public"}),
-            ("list_policies", "list_policies", {"table_name": "orders", "schema": "public"}),
-            (
-                "sample_rows",
-                "sample_rows",
-                {"table_name": "orders", "n": 5, "schema": "public"},
+                {"source_table": "users", "target_table": "items"},
+                ["find_join_path"],
             ),
             (
-                "column_values",
-                "column_values",
-                {"table_name": "orders", "column_name": "status", "top_n": 20, "schema": "public"},
+                "column_profile",
+                {"table_name": "orders", "column_name": "status"},
+                ["column_stats", "column_values"],
+            ),
+            ("query", {"sql": "SELECT 1"}, ["query"]),
+            ("explain_query", {"sql": "SELECT 1"}, ["explain_query"]),
+            (
+                "health",
+                {},
+                [
+                    "table_health",
+                    "table_sizes",
+                    "unused_indexes",
+                    "sequence_health",
+                    "matview_status",
+                    "io_stats",
+                    "slow_queries",
+                ],
+            ),
+            ("health", {"checks": ["io"]}, ["io_stats"]),
+            (
+                "health",
+                {"checks": ["slow_queries", "tables", "tables"]},
+                ["slow_queries", "table_health"],
             ),
             (
-                "column_stats",
-                "column_stats",
-                {"table_name": "orders", "column_name": "total", "schema": "public"},
+                "activity",
+                {},
+                ["active_queries", "blocking_locks", "maintenance_progress", "replication_status"],
             ),
-            (
-                "search_data",
-                "search_data",
-                {"table_name": "users", "keyword": "test", "schema": "public"},
-            ),
-            ("search_columns", "search_columns", {"keyword": "email", "schema": "public"}),
-            ("search_enum_values", "search_enum_values", {"keyword": ""}),
-            ("explain_query", "explain_query", {"sql": "SELECT 1"}),
-            ("query", "query", {"sql": "SELECT 1"}),
-            ("table_health", "table_health", {"schema": "public"}),
-            ("table_sizes", "table_sizes", {"schema": "public"}),
-            ("unused_indexes", "unused_indexes", {"schema": "public"}),
-            ("slow_queries", "slow_queries", {"limit": 20}),
-            ("replication_status", "replication_status", {}),
-            ("active_queries", "active_queries", {}),
-            ("blocking_locks", "blocking_locks", {}),
-            ("sequence_health", "sequence_health", {"schema": "public"}),
-            ("matview_status", "matview_status", {"schema": "public"}),
-            ("io_stats", "io_stats", {}),
-            ("maintenance_progress", "maintenance_progress", {}),
-            (
-                "object_dependencies",
-                "object_dependencies",
-                {"object_name": "users", "object_type": "table", "schema": "public"},
-            ),
+            ("activity", {"views": ["locks"]}, ["blocking_locks"]),
         ],
     )
-    async def test_tool_delegates_to_db_method(
-        self, tool_name: str, db_method: str, kwargs: dict[str, object]
+    async def test_tool_delegates_in_order(
+        self, tool_name: str, kwargs: dict[str, object], expected_methods: list[str]
     ) -> None:
-        # spec=AsyncpgDatabase ensures only real methods exist on the mock,
-        # so calling a non-existent method raises AttributeError.
-        mock_db = AsyncMock(spec=AsyncpgDatabase)
-        ctx = _make_ctx(mock_db)
+        mock_db = _mock_db()
+        await _run(tool_name, mock_db, **kwargs)
+        assert _called(mock_db) == expected_methods, tool_name
 
-        tool = mcp._tool_manager._tools[tool_name]
-        mock_registry = MagicMock()
-        mock_registry.names.return_value = ["default"]
-        patches = [
-            patch(f"pglens.adapters.tools.{mod}.db", return_value=mock_db)
-            for mod in ("schema", "exploration", "query", "health", "safety")
+    async def test_list_objects_pattern_reads_a_full_page_then_filters(self) -> None:
+        mock_db = _mock_db()
+        mock_db.list_tables.return_value = [{"table_name": "orders"}, {"table_name": "users"}]
+        result = await _run("list_objects", mock_db, kind="table", pattern="ORD", limit=5)
+        mock_db.list_tables.assert_awaited_once_with("public", 1000)
+        assert result == [{"table_name": "orders"}]
+
+    async def test_list_objects_names_detail_keeps_identifiers_only(self) -> None:
+        mock_db = _mock_db()
+        mock_db.list_tables.return_value = [{"table_name": "orders", "estimated_row_count": 3}]
+        result = await _run("list_objects", mock_db, kind="table", detail="names")
+        assert result == [{"table_name": "orders"}]
+
+    async def test_describe_object_non_table_filters_the_catalogue_by_name(self) -> None:
+        mock_db = _mock_db()
+        mock_db.list_views.return_value = [
+            {"view_name": "active_orders", "definition": "SELECT 1"},
+            {"view_name": "other", "definition": "SELECT 2"},
         ]
-        # database_info also reads the alias registry, which is not an AsyncpgDatabase call
-        patches.append(patch("pglens.adapters.tools.schema.databases", return_value=mock_registry))
-        for p in patches:
-            p.start()
-        try:
-            await tool.fn(ctx=ctx, **kwargs)
-        finally:
-            for p in patches:
-                p.stop()
+        mock_db.object_dependencies.return_value = [{"dependent_name": "x"}]
+        result = await _run("describe_object", mock_db, name="active_orders", kind="view")
+        mock_db.list_views.assert_awaited_once_with("public", 1000, "full")
+        assert result == {
+            "object": "public.active_orders",
+            "kind": "view",
+            "definitions": [{"view_name": "active_orders", "definition": "SELECT 1"}],
+            "dependents": [{"dependent_name": "x"}],
+        }
 
-        # Verify exactly one method was called, and it was the expected one.
-        called_methods = [name for name, _args, _kwargs in mock_db.method_calls]
-        assert called_methods == [db_method], (
-            f"{tool_name}: expected call to db.{db_method}(), got {called_methods}"
-        )
+    async def test_health_passes_limit_to_every_check(self) -> None:
+        mock_db = _mock_db()
+        await _run("health", mock_db, checks=["slow_queries", "sizes"], schema="s", limit=7)
+        mock_db.slow_queries.assert_awaited_once_with(7)
+        mock_db.table_sizes.assert_awaited_once_with("s", 7)
+
+    async def test_column_profile_returns_both_sections(self) -> None:
+        mock_db = _mock_db()
+        mock_db.column_stats.return_value = {"null_fraction": 0.0}
+        mock_db.column_values.return_value = [{"value": "pending", "frequency": 2}]
+        result = await _run("column_profile", mock_db, table_name="orders", column_name="status")
+        assert result == {
+            "column": "public.orders.status",
+            "stats": {"null_fraction": 0.0},
+            "top_values": [{"value": "pending", "frequency": 2}],
+        }
 
 
 async def _properties(tool_name: str) -> dict[str, dict[str, object]]:
     """Return the input-schema properties a client sees for one tool, via tools/list."""
     tools = {t.name: t for t in await mcp.list_tools()}
     return {name: dict(prop) for name, prop in tools[tool_name].input_schema["properties"].items()}
+
+
+def _array_items(prop: dict[str, object]) -> dict[str, object]:
+    """The items schema of a `list[...] | None` property."""
+    branches = prop["anyOf"]
+    assert isinstance(branches, list)
+    for branch in branches:
+        if isinstance(branch, dict) and branch.get("type") == "array":
+            return cast(dict[str, object], branch["items"])
+    raise AssertionError(f"no array branch in {prop}")
 
 
 class TestToolSchemas:
@@ -205,9 +288,9 @@ class TestToolSchemas:
         ]
         assert not missing, f"Parameters without a description: {missing}"
 
-    async def test_object_type_is_an_enum(self) -> None:
-        props = await _properties("object_dependencies")
-        assert props["object_type"]["enum"] == [
+    async def test_describe_object_kind_is_an_enum(self) -> None:
+        props = await _properties("describe_object")
+        assert props["kind"]["enum"] == [
             "table",
             "view",
             "matview",
@@ -215,11 +298,38 @@ class TestToolSchemas:
             "sequence",
             "index",
         ]
+        assert props["kind"]["default"] == "table"
 
-    @pytest.mark.parametrize(
-        "tool_name",
-        ["list_views", "list_indexes", "list_functions", "matview_status", "describe_table"],
-    )
+    async def test_list_objects_kind_is_an_enum(self) -> None:
+        props = await _properties("list_objects")
+        assert props["kind"]["enum"] == [
+            "table",
+            "view",
+            "matview",
+            "index",
+            "function",
+            "sequence",
+            "enum",
+            "extension",
+            "column",
+        ]
+        assert "default" not in props["kind"]
+
+    async def test_health_checks_and_activity_views_are_enums(self) -> None:
+        checks = _array_items((await _properties("health"))["checks"])
+        assert checks["enum"] == [
+            "tables",
+            "sizes",
+            "indexes",
+            "sequences",
+            "matviews",
+            "io",
+            "slow_queries",
+        ]
+        views = _array_items((await _properties("activity"))["views"])
+        assert views["enum"] == ["sessions", "locks", "maintenance", "replication"]
+
+    @pytest.mark.parametrize("tool_name", ["list_objects", "describe_object"])
     async def test_detail_is_an_enum_defaulting_to_summary(self, tool_name: str) -> None:
         prop = (await _properties(tool_name))["detail"]
         assert prop["enum"] == ["names", "summary", "full"]
@@ -228,14 +338,12 @@ class TestToolSchemas:
     @pytest.mark.parametrize(
         "tool_name, param, minimum, maximum",
         [
-            ("sample_rows", "n", 1, 100),
-            ("column_values", "top_n", 1, 100),
-            ("slow_queries", "limit", 1, 100),
+            ("column_profile", "top_n", 1, 100),
+            ("health", "limit", 1, 100),
+            ("list_objects", "limit", 1, 1000),
             ("find_join_path", "max_depth", 1, 6),
             ("query", "limit", 1, 500),
             ("query", "offset", 0, None),
-            ("list_tables", "limit", 1, 1000),
-            ("search_columns", "limit", 1, 1000),
         ],
     )
     async def test_ranges_are_in_schema(
@@ -259,7 +367,9 @@ class TestToolSchemas:
             pytest.raises(Exception, match="(?i)less than or equal to 100"),
         ):
             await mcp._tool_manager.call_tool(
-                "sample_rows", {"table_name": "users", "n": 1000}, _make_ctx(mock_db)
+                "column_profile",
+                {"table_name": "users", "column_name": "bio", "top_n": 1000},
+                _make_ctx(mock_db),
             )
         assert mock_db.method_calls == []
 
@@ -315,7 +425,7 @@ class TestAlwaysLoad:
             for tool in tools
             if tool.meta is not None and tool.meta.get("anthropic/alwaysLoad") is True
         }
-        assert always == {"query", "describe_table", "list_tables", "column_values"}
+        assert always == {"query", "describe_object", "list_objects", "column_profile"}
         assert len(always) <= 5
         # The wire form carries the key under _meta.
         payload = ListToolsResult(tools=tools).model_dump(by_alias=True, exclude_none=True)

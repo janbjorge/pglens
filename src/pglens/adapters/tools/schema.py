@@ -1,88 +1,145 @@
 """Schema and discovery tools."""
 
+from pglens.adapters.asyncpg_adapter import select_detail
 from pglens.adapters.mcp_adapter import ALWAYS_LOAD, READ_ONLY, Ctx, databases, db, mcp
 from pglens.core.types import (
     Database,
     Detail,
     ListLimit,
     MaxDepth,
+    NamePattern,
+    ObjectKind,
+    ObjectName,
+    ObjectType,
     Schema,
     SourceTable,
-    TableName,
     TargetTable,
 )
+
+# A name filter is applied after the fetch, so a filtered listing reads a whole
+# catalogue page first. This is the adapter's upper bound on limit.
+CATALOGUE_PAGE = 1000
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def database_info(ctx: Ctx, database: Database = None) -> dict[str, object]:
     """Get PostgreSQL server and database identity: version, database name, current user,
-    encoding, timezone, max_connections, uptime, total database size, and the configured
-    database aliases (`available_databases`) that can be passed as the `database` argument
-    on any tool. The first alias is the primary (PGDATABASE); extras come from
-    PGLENS_DATABASES. Call this first when you need to know the Postgres version
-    (to use version-appropriate SQL syntax), verify which database you are connected to,
-    or discover targets such as Azure's `azure_sys` system-metric database.
+    encoding, timezone, max_connections, uptime, total database size, the schemas with
+    their table and view counts (`schemas`), and the configured database aliases
+    (`available_databases`) that can be passed as the `database` argument on any tool.
+    The first alias is the primary (PGDATABASE); extras come from PGLENS_DATABASES.
+    Call this first when you need the Postgres version, want to verify which database
+    you are connected to, or suspect the data lives outside the public schema.
     """
-    info = await db(ctx, database).database_info()
+    source = db(ctx, database)
+    info = await source.database_info()
+    info["schemas"] = await source.list_schemas()
     info["available_databases"] = databases(ctx).names()
     return info
 
 
-@mcp.tool(annotations=READ_ONLY)
-async def list_schemas(ctx: Ctx, database: Database = None) -> list[dict[str, object]]:
-    """List all user-visible schemas with table and view counts.
-    Call this first to discover non-public schemas before exploring tables.
-    """
-    return await db(ctx, database).list_schemas()
-
-
 @mcp.tool(annotations=READ_ONLY, meta=ALWAYS_LOAD)
-async def list_tables(
-    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
-) -> list[dict[str, object]]:
-    """List tables in the schema with estimated row counts and table descriptions.
-    Good starting point to see what the database contains.
-    """
-    return await db(ctx, database).list_tables(schema, limit)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def list_views(
+async def list_objects(
     ctx: Ctx,
+    kind: ObjectKind,
     schema: Schema = "public",
-    limit: ListLimit = 100,
+    pattern: NamePattern = None,
     detail: Detail = "summary",
+    limit: ListLimit = 100,
     database: Database = None,
 ) -> list[dict[str, object]]:
-    """List views with their descriptions; detail='full' adds the SQL definition.
-    Views often contain pre-joined queries that can save you from writing complex joins.
+    """List objects of one kind in a schema. table: estimated row count and description.
+    view and matview: description, populated status and size (definition with
+    detail='full'). index: table, type, uniqueness, validity, size and scan counts
+    (CREATE INDEX text with detail='full'). function: arguments, return type, language and
+    volatility (source with detail='full'). sequence: current value and percentage
+    consumed. enum: the allowed values. extension: installed extensions and versions.
+    column: every column whose name contains pattern, across all tables in the schema,
+    with its type. pattern is a case-insensitive substring on the object name. Start with
+    kind='table' to see what the database contains.
     """
-    return await db(ctx, database).list_views(schema, limit, detail)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def list_extensions(ctx: Ctx, database: Database = None) -> list[dict[str, object]]:
-    """List installed Postgres extensions and versions.
-    Check this before using extension-specific functions like PostGIS or pg_trgm.
-    """
-    return await db(ctx, database).list_extensions()
+    source = db(ctx, database)
+    page = CATALOGUE_PAGE if pattern else limit
+    rows: list[dict[str, object]]
+    name_keys: tuple[str, ...]
+    match kind:
+        case "table":
+            rows, name_keys = await source.list_tables(schema, page), ("table_name",)
+        case "view":
+            rows, name_keys = await source.list_views(schema, page, detail), ("view_name",)
+        case "matview":
+            rows = await source.matview_status(schema, page, detail)
+            name_keys = ("matview_name",)
+        case "index":
+            rows = await source.list_indexes(schema, page, detail)
+            name_keys = ("index_name", "table_name")
+        case "function":
+            rows = await source.list_functions(schema, page, detail)
+            name_keys = ("function_name",)
+        case "sequence":
+            rows, name_keys = await source.sequence_health(schema, page), ("sequence_name",)
+        case "enum":
+            rows, name_keys = await source.search_enum_values(pattern or ""), ("enum_name",)
+        case "extension":
+            rows, name_keys = await source.list_extensions(), ("extname",)
+        case "column":
+            rows = await source.search_columns(pattern or "", schema, limit)
+            name_keys = ("table_name", "column_name")
+        case _:
+            raise ValueError(f"Unknown kind {kind!r}")
+    if pattern and kind not in ("enum", "column"):
+        needle = pattern.lower()
+        rows = [row for row in rows if needle in str(row[name_keys[0]]).lower()]
+    return select_detail(rows[:limit], detail, names=name_keys, heavy=())
 
 
 @mcp.tool(annotations=READ_ONLY, meta=ALWAYS_LOAD)
-async def describe_table(
+async def describe_object(
     ctx: Ctx,
-    table_name: TableName,
+    name: ObjectName,
+    kind: ObjectType = "table",
     schema: Schema = "public",
     detail: Detail = "summary",
     database: Database = None,
 ) -> dict[str, object]:
-    """Get detailed table structure: columns, types, defaults, nullability,
-    primary keys, foreign keys (both directions), indexes, and check constraints.
-    Call this before writing queries against a table to get correct column names,
-    types, and JOIN conditions. detail='full' adds the CREATE INDEX definitions;
-    detail='names' returns only the column names and primary keys.
+    """Describe one object. For a table (the default kind): columns with types, defaults
+    and nullability, primary keys, foreign keys in both directions, indexes, check
+    constraints, triggers, row-level security policies, and dependents (the views,
+    functions and constraints that would break on DROP or ALTER). detail='full' adds the
+    CREATE INDEX text; detail='names' returns only column names and primary keys.
+    For view, matview, function, sequence or index: the full catalogue row (definition
+    or source) under `definitions`, plus dependents. Call this before writing queries
+    against a table, and before suggesting any DDL.
     """
-    return await db(ctx, database).describe_table(table_name, schema, detail)
+    source = db(ctx, database)
+    if kind == "table":
+        result = await source.describe_table(name, schema, detail)
+        result["triggers"] = await source.list_triggers(name, schema)
+        result["policies"] = await source.list_policies(name, schema)
+        result["dependents"] = await source.object_dependencies(name, kind, schema)
+        return result
+    rows: list[dict[str, object]]
+    match kind:
+        case "view":
+            rows, key = await source.list_views(schema, CATALOGUE_PAGE, "full"), "view_name"
+        case "matview":
+            rows = await source.matview_status(schema, CATALOGUE_PAGE, "full")
+            key = "matview_name"
+        case "function":
+            rows = await source.list_functions(schema, CATALOGUE_PAGE, "full")
+            key = "function_name"
+        case "sequence":
+            rows, key = await source.sequence_health(schema, CATALOGUE_PAGE), "sequence_name"
+        case "index":
+            rows, key = await source.list_indexes(schema, CATALOGUE_PAGE, "full"), "index_name"
+        case _:
+            raise ValueError(f"Unknown kind {kind!r}")
+    return {
+        "object": f"{schema}.{name}",
+        "kind": kind,
+        "definitions": [row for row in rows if row[key] == name],
+        "dependents": await source.object_dependencies(name, kind, schema),
+    }
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -100,65 +157,3 @@ async def find_join_path(
     across tables that are multiple foreign keys apart.
     """
     return await db(ctx, database).find_join_path(source_table, target_table, schema, max_depth)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def list_indexes(
-    ctx: Ctx,
-    schema: Schema = "public",
-    limit: ListLimit = 100,
-    detail: Detail = "summary",
-    database: Database = None,
-) -> list[dict[str, object]]:
-    """List all indexes across every table in the schema: name, table, type (btree/hash/gin/gist),
-    uniqueness, validity, size on disk, and usage stats (scans, tuples read); detail='full'
-    adds the CREATE INDEX definition. is_valid=false means a failed CREATE INDEX
-    CONCURRENTLY left an invalid index that costs writes but serves no reads; drop or
-    rebuild it.
-    Use this to audit indexing strategy across the whole schema — unlike describe_table which
-    shows indexes for one table, this gives you the big picture. Combine with unused_indexes
-    to find waste, or with explain_query to verify a query uses the index you expect.
-    """
-    return await db(ctx, database).list_indexes(schema, limit, detail)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def list_functions(
-    ctx: Ctx,
-    schema: Schema = "public",
-    limit: ListLimit = 100,
-    detail: Detail = "summary",
-    database: Database = None,
-) -> list[dict[str, object]]:
-    """List stored functions and procedures with their arguments, return type, language
-    and volatility; detail='full' adds the source code. Use to understand what business
-    logic lives in the database.
-    """
-    return await db(ctx, database).list_functions(schema, limit, detail)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def list_triggers(
-    ctx: Ctx,
-    table_name: TableName,
-    schema: Schema = "public",
-    database: Database = None,
-) -> list[dict[str, object]]:
-    """Show triggers on a table: name, full definition, enabled/disabled status, and
-    which function they call. Triggers can silently modify data on INSERT/UPDATE/DELETE.
-    """
-    return await db(ctx, database).list_triggers(table_name, schema)
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def list_policies(
-    ctx: Ctx,
-    table_name: TableName,
-    schema: Schema = "public",
-    database: Database = None,
-) -> list[dict[str, object]]:
-    """Show row-level security policies on a table: command scope (SELECT/INSERT/UPDATE/DELETE),
-    permissive vs restrictive, USING and WITH CHECK expressions, and applicable roles.
-    RLS policies silently filter rows — check these if queries return fewer rows than expected.
-    """
-    return await db(ctx, database).list_policies(table_name, schema)
