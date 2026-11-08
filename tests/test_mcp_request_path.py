@@ -136,7 +136,7 @@ class TestConsolidatedTools:
         assert isinstance(result, dict)
         assert [t["trigger_name"] for t in result["triggers"]] == ["trg_orders_modified"]
         assert [p["policy_name"] for p in result["policies"]] == ["orders_owner_policy"]
-        assert "active_orders" in {d["dependent_name"] for d in result["dependents"]}
+        assert "public.active_orders" in {d["dependent"] for d in result["dependents"]}
 
     async def test_describe_object_view(self, pool: asyncpg.Pool) -> None:
         result = await _call(pool, "describe_object", {"name": "active_orders", "kind": "view"})

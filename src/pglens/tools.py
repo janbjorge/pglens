@@ -109,7 +109,8 @@ async def list_objects(
         case "sequence":
             rows, name_keys = await source.sequence_health(schema, page), ("sequence_name",)
         case "enum":
-            rows, name_keys = await source.search_enum_values(pattern or ""), ("enum_name",)
+            rows = await source.search_enum_values(pattern or "", schema, limit)
+            name_keys = ("enum_name",)
         case "extension":
             rows, name_keys = await source.list_extensions(), ("extname",)
         case "column":
@@ -267,7 +268,8 @@ async def health(
     backend type (PostgreSQL 16+). slow_queries: top statements by total execution time
     from pg_stat_statements, or install instructions when the extension is missing.
     checks=None runs all seven; name one or more to narrow. limit caps the rows per
-    check, worst first.
+    check: biggest tables and indexes, most consumed sequences and slowest statements
+    first; matviews come by name and io returns every row.
     """
     source = db(ctx, database)
     result: dict[str, object] = {}

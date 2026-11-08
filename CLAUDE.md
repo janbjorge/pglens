@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is pglens?
 
-A Model Context Protocol (MCP) server that gives AI agents read-only introspection into PostgreSQL databases. Nine tools: `database_info`, `list_objects`, `describe_object`, `find_join_path`, `column_profile`, `query`, `explain_query`, `health` and `activity`, all using `pg_catalog` with no extensions required (the `slow_queries` check of `health` reads `pg_stat_statements` when installed and returns install instructions when not; the `io` check needs PostgreSQL 16+ and returns an error entry on older servers). `list_objects`, `describe_object`, `health` and `activity` dispatch on an enum parameter (`kind`, `checks`, `views`) to the matching `AsyncpgDatabase` methods, so the catalogue stays behind a few entry points.
+A Model Context Protocol (MCP) server that gives AI agents read-only introspection into PostgreSQL databases. Nine tools: `database_info`, `list_objects`, `describe_object`, `find_join_path`, `column_profile`, `query`, `explain_query`, `health` and `activity`, all reading the system catalogs (`pg_catalog`, plus `information_schema` for tables, views and columns) with no extensions required (the `slow_queries` check of `health` reads `pg_stat_statements` when installed and returns install instructions when not; the `io` check needs PostgreSQL 16+ and returns an error entry on older servers). `list_objects`, `describe_object`, `health` and `activity` dispatch on an enum parameter (`kind`, `checks`, `views`) to the matching `AsyncpgDatabase` methods, so the catalogue stays behind a few entry points.
 
-Tools adapt to the server version: `AsyncpgDatabase` lazily caches `server_version_num` (injectable in tests via the constructor) and selects static SQL fragments per version branch. PostgreSQL 18 adds I/O byte counts, vacuum/analyze timing totals, and subscription conflict counts.
+Tools adapt to the server version: `AsyncpgDatabase` lazily caches `server_version_num` (injectable in tests via the constructor) to skip views that do not exist yet (`pg_stat_io` before 16, `pg_stat_subscription_stats` before 15) and to add PostgreSQL 18's vacuum/analyze timing columns in `table_health`. The progress, I/O and subscription views are read whole (`SELECT *`), so columns a newer server adds appear by themselves.
 
 ## Commands
 
