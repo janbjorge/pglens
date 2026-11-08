@@ -593,6 +593,7 @@ class AsyncpgDatabase:
         fk_rows = await self._fetch(
             f"""
             SELECT
+                con.oid AS constraint_oid,
                 cl1.relname AS from_table,
                 a1.attname AS from_column,
                 cl2.relname AS to_table,
@@ -600,16 +601,22 @@ class AsyncpgDatabase:
             {FOREIGN_KEY_PAIRS}
                 AND ns1.nspname = $1
                 AND ns2.nspname = $1
+            ORDER BY con.oid, u.ord
             """,
             schema,
         )
-        # Undirected adjacency: a foreign key can be joined from either side.
-        graph: dict[str, list[dict[str, str]]] = defaultdict(list)
+        # One edge per foreign key, not per column pair: joining on part of a
+        # composite key fans out.
+        keys: dict[object, list[dict[str, object]]] = defaultdict(list)
         for row in fk_rows:
-            fr, fc = str(row["from_table"]), str(row["from_column"])
-            to, tc = str(row["to_table"]), str(row["to_column"])
-            graph[fr].append({"table": to, "from_col": fc, "to_col": tc})
-            graph[to].append({"table": fr, "from_col": tc, "to_col": fc})
+            keys[row["constraint_oid"]].append(row)
+        # Undirected adjacency: a foreign key can be joined from either side.
+        graph: dict[str, list[tuple[str, list[tuple[str, str]]]]] = defaultdict(list)
+        for pairs in keys.values():
+            fr, to = str(pairs[0]["from_table"]), str(pairs[0]["to_table"])
+            columns = [(str(p["from_column"]), str(p["to_column"])) for p in pairs]
+            graph[fr].append((to, columns))
+            graph[to].append((fr, [(tc, fc) for fc, tc in columns]))
 
         # Breadth-first search over simple paths of at most max_depth hops.
         paths: list[list[dict[str, str]]] = []
@@ -622,25 +629,18 @@ class AsyncpgDatabase:
                 continue
             if len(path) >= max_depth:
                 continue
-            for edge in graph.get(current, []):
-                nxt = edge["table"]
+            for nxt, columns in graph.get(current, []):
                 if nxt not in visited:
                     hop = {
-                        "from_table": current,
-                        "from_column": edge["from_col"],
                         "to_table": nxt,
-                        "to_column": edge["to_col"],
+                        "join": " AND ".join(f"{current}.{fc} = {nxt}.{tc}" for fc, tc in columns),
                     }
                     queue.append((nxt, [*path, hop], visited | {nxt}))
 
         formatted: list[dict[str, object]] = [
             {
-                "tables": [path[0]["from_table"], *(hop["to_table"] for hop in path)],
-                "joins": [
-                    f"{hop['from_table']}.{hop['from_column']}"
-                    f" = {hop['to_table']}.{hop['to_column']}"
-                    for hop in path
-                ],
+                "tables": [source_table, *(hop["to_table"] for hop in path)],
+                "joins": [hop["join"] for hop in path],
                 "hops": len(path),
             }
             for path in paths  # BFS yields shortest paths first

@@ -274,6 +274,20 @@ class TestRelationships:
         paths = result["paths"]
         assert any(p["hops"] <= 3 for p in paths)
 
+    async def test_find_join_path_composite_key_is_one_hop(self, db: AsyncpgDatabase) -> None:
+        result = await db.find_join_path("warehouses", "shipping_regions", "public", 4)
+        # Joining on one column of a composite key fans out; both columns go in one hop.
+        assert result["paths"] == [
+            {
+                "tables": ["warehouses", "shipping_regions"],
+                "joins": [
+                    "warehouses.country_code = shipping_regions.country_code"
+                    " AND warehouses.region_code = shipping_regions.region_code"
+                ],
+                "hops": 1,
+            }
+        ]
+
     async def test_find_join_path_no_path(self, db: AsyncpgDatabase) -> None:
         result = await db.find_join_path("users", "shipping_regions", "public", 4)
         assert result["paths_found"] == 0
