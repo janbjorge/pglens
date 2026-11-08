@@ -373,6 +373,7 @@ class TestSQLParsingDefense:
             ("SELECT * INTO evil_copy FROM users", "SELECT INTO"),
             ("WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x", "DELETE"),
             ("SELECT * FROM users WHERE id = $1", "placeholders"),
+            ("SELECT pg_terminate_backend(pg_backend_pid())", "pg_terminate_backend"),
         ],
     )
     async def test_query_rejects_unsafe_sql(

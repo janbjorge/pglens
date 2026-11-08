@@ -57,7 +57,7 @@ Six modules under `src/pglens/`, no subpackages.
 
 ## Key conventions
 
-- **SQL safety**: Always use `quote_ident()` (from `sql.py`) for identifiers, parameterized queries (`$1`, `$2`) for values, and `readonly=True` transactions. User SQL goes through `validate_select()`, which parses the statement with pglast, rejects anything that is not a single plain SELECT (no multi-statement input, no `SELECT INTO`, no writes hidden in CTEs, no `$n` placeholders), and returns normalized SQL that is safe to embed in a subquery.
+- **SQL safety**: Always use `quote_ident()` (from `sql.py`) for identifiers, parameterized queries (`$1`, `$2`) for values, and `readonly=True` transactions. User SQL goes through `validate_select()`, which parses the statement with pglast, rejects anything that is not a single plain SELECT (no multi-statement input, no `SELECT INTO`, no writes hidden in CTEs, no `$n` placeholders, no calls to the side-effecting functions in `SIDE_EFFECT_FUNCTIONS` / `SIDE_EFFECT_PREFIXES`), and returns normalized SQL that is safe to embed in a subquery.
 - **Parameter types**: Use the `Annotated` aliases from `types.py` for all MCP tool parameters. New aliases need `Field(description=...)`; `tests/test_tool_registration.py` fails on any parameter without a description.
 - **Return values**: Convert asyncpg Records to dicts (`[dict(r) for r in rows]`) for JSON serialization.
 - **Schema default**: Most tools default the schema parameter to `"public"`.
