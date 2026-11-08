@@ -610,6 +610,23 @@ class TestValidateSelect:
         with pytest.raises(ValueError, match=verb):
             validate_select(sql)
 
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity",
+            "SELECT pg_catalog.set_config('statement_timeout', '0', true)",
+            "SELECT * FROM pg_advisory_lock(1)",
+            "SELECT 1 WHERE EXISTS (SELECT pg_stat_reset())",
+            "WITH x AS (SELECT dblink_exec('db', 'DROP TABLE t')) SELECT * FROM x",
+        ],
+    )
+    def test_rejects_side_effecting_functions(self, sql: str) -> None:
+        with pytest.raises(ValueError, match="acts outside the read-only query"):
+            validate_select(sql)
+
+    def test_allows_ordinary_functions(self) -> None:
+        validate_select("SELECT count(*), lower(name), now(), current_setting('x') FROM t")
+
     def test_rejects_parameter_placeholders(self) -> None:
         with pytest.raises(ValueError, match="placeholders"):
             validate_select("SELECT * FROM users WHERE id = $1")

@@ -335,6 +335,10 @@ class TestSQLParsingDefense:
         with pytest.raises(ValueError, match="Only SELECT"):
             await db.query("UPDATE users SET username = 'hacked'")
 
+    async def test_query_blocks_side_effecting_function(self, db: AsyncpgDatabase) -> None:
+        with pytest.raises(ValueError, match="pg_terminate_backend"):
+            await db.query("SELECT pg_terminate_backend(pg_backend_pid())")
+
     async def test_query_blocks_delete(self, db: AsyncpgDatabase) -> None:
         with pytest.raises(ValueError, match="Only SELECT"):
             await db.query("DELETE FROM users")
