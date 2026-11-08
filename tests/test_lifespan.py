@@ -26,6 +26,6 @@ async def test_lifespan_passes_max_cell_chars_to_every_database(
     # provides both, so no PostgreSQL is needed.
     with patch("asyncpg.create_pool", return_value=MagicMock()) as create_pool:
         async with app_lifespan(mcp) as registry:
-            assert registry.names() == ["analytics", "app"]
+            assert registry.names() == ["app", "analytics"]
             assert {db.max_cell_chars for db in registry.databases.values()} == {7}
     assert create_pool.call_count == 2
