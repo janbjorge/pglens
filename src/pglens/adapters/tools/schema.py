@@ -3,6 +3,7 @@
 from pglens.adapters.mcp_adapter import ALWAYS_LOAD, READ_ONLY, Ctx, databases, db, mcp
 from pglens.core.types import (
     Database,
+    ListLimit,
     MaxDepth,
     Schema,
     SourceTable,
@@ -36,22 +37,22 @@ async def list_schemas(ctx: Ctx, database: Database = None) -> list[dict[str, ob
 
 @mcp.tool(annotations=READ_ONLY, meta=ALWAYS_LOAD)
 async def list_tables(
-    ctx: Ctx, schema: Schema = "public", database: Database = None
+    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
 ) -> list[dict[str, object]]:
     """List tables in the schema with estimated row counts and table descriptions.
     Good starting point to see what the database contains.
     """
-    return await db(ctx, database).list_tables(schema)
+    return await db(ctx, database).list_tables(schema, limit)
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def list_views(
-    ctx: Ctx, schema: Schema = "public", database: Database = None
+    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
 ) -> list[dict[str, object]]:
     """List views with their SQL definitions.
     Views often contain pre-joined queries that can save you from writing complex joins.
     """
-    return await db(ctx, database).list_views(schema)
+    return await db(ctx, database).list_views(schema, limit)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -96,7 +97,7 @@ async def find_join_path(
 
 @mcp.tool(annotations=READ_ONLY)
 async def list_indexes(
-    ctx: Ctx, schema: Schema = "public", database: Database = None
+    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
 ) -> list[dict[str, object]]:
     """List all indexes across every table in the schema: name, table, type (btree/hash/gin/gist),
     uniqueness, validity, full CREATE INDEX definition, size on disk, and usage stats
@@ -106,17 +107,17 @@ async def list_indexes(
     shows indexes for one table, this gives you the big picture. Combine with unused_indexes
     to find waste, or with explain_query to verify a query uses the index you expect.
     """
-    return await db(ctx, database).list_indexes(schema)
+    return await db(ctx, database).list_indexes(schema, limit)
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def list_functions(
-    ctx: Ctx, schema: Schema = "public", database: Database = None
+    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
 ) -> list[dict[str, object]]:
     """List stored functions and procedures with their arguments, return type, language,
     volatility, and source code. Use to understand what business logic lives in the database.
     """
-    return await db(ctx, database).list_functions(schema)
+    return await db(ctx, database).list_functions(schema, limit)
 
 
 @mcp.tool(annotations=READ_ONLY)

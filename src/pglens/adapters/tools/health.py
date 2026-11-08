@@ -1,12 +1,12 @@
 """Performance and health monitoring tools."""
 
 from pglens.adapters.mcp_adapter import READ_ONLY, Ctx, db, mcp
-from pglens.core.types import Database, Schema, TopQueries
+from pglens.core.types import Database, ListLimit, Schema, TopQueries
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def table_health(
-    ctx: Ctx, schema: Schema = "public", database: Database = None
+    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
 ) -> list[dict[str, object]]:
     """Per-table health: index hit rates, sequential vs index scan counts, live/dead tuples
     with dead-tuple percentage, transaction ID age and wraparound risk percentage, and last
@@ -16,22 +16,22 @@ async def table_health(
     fraction of pages all-frozen; a low frozen_pct on a huge table means an expensive
     future anti-wraparound vacuum. Use for query performance and maintenance triage.
     """
-    return await db(ctx, database).table_health(schema)
+    return await db(ctx, database).table_health(schema, limit)
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def table_sizes(
-    ctx: Ctx, schema: Schema = "public", database: Database = None
+    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
 ) -> list[dict[str, object]]:
     """Show disk usage per table: total size (table + toast + indexes), table-only size,
     and index size. Ranked by total size descending. Use to find the largest tables.
     """
-    return await db(ctx, database).table_sizes(schema)
+    return await db(ctx, database).table_sizes(schema, limit)
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def unused_indexes(
-    ctx: Ctx, schema: Schema = "public", database: Database = None
+    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
 ) -> list[dict[str, object]]:
     """List indexes that have never been scanned since the last statistics reset.
     Excludes unique and primary key indexes. Each unused index wastes disk space
@@ -39,7 +39,7 @@ async def unused_indexes(
     failed CREATE INDEX CONCURRENTLY. It costs writes and serves no reads, so drop
     or rebuild it.
     """
-    return await db(ctx, database).unused_indexes(schema)
+    return await db(ctx, database).unused_indexes(schema, limit)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -118,21 +118,21 @@ async def blocking_locks(ctx: Ctx, database: Database = None) -> list[dict[str, 
 
 @mcp.tool(annotations=READ_ONLY)
 async def sequence_health(
-    ctx: Ctx, schema: Schema = "public", database: Database = None
+    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
 ) -> list[dict[str, object]]:
     """Show all sequences with their current value, min/max, and percentage consumed.
     Sequences approaching max_value will cause hard application failures on INSERT.
     Sorted by consumption percentage descending.
     """
-    return await db(ctx, database).sequence_health(schema)
+    return await db(ctx, database).sequence_health(schema, limit)
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def matview_status(
-    ctx: Ctx, schema: Schema = "public", database: Database = None
+    ctx: Ctx, schema: Schema = "public", limit: ListLimit = 100, database: Database = None
 ) -> list[dict[str, object]]:
     """Show materialized views with their populated status, size, definition, and whether
     they have a unique index (required for REFRESH CONCURRENTLY). Stale matviews return
     outdated query results.
     """
-    return await db(ctx, database).matview_status(schema)
+    return await db(ctx, database).matview_status(schema, limit)

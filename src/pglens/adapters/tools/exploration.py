@@ -6,6 +6,7 @@ from pglens.core.types import (
     ColumnName,
     Database,
     EnumKeyword,
+    ListLimit,
     SampleSize,
     Schema,
     SearchKeyword,
@@ -81,12 +82,13 @@ async def search_columns(
     ctx: Ctx,
     keyword: ColumnKeyword,
     schema: Schema = "public",
+    limit: ListLimit = 100,
     database: Database = None,
 ) -> list[dict[str, object]]:
     """Search for columns by name across all tables in the schema.
     Use when you need a field like 'email' or 'created_at' but don't know which table has it.
     """
-    return await db(ctx, database).search_columns(keyword, schema)
+    return await db(ctx, database).search_columns(keyword, schema, limit)
 
 
 @mcp.tool(annotations=READ_ONLY)

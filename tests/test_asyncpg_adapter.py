@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -894,3 +894,48 @@ class TestCellTruncation:
         [row] = await db.search_data("posts", "zz", "public")
 
         assert row["body"] == "z" * 10 + "…[truncated, 2000 chars total]"
+
+
+class TestListLimit:
+    """Schema-wide list methods bind the row limit as a parameter and clamp it to 1-1000."""
+
+    @pytest.mark.parametrize(
+        ("call", "position"),
+        [
+            (lambda db: db.list_tables("public", limit=7), 2),
+            (lambda db: db.list_views("public", limit=7), 2),
+            (lambda db: db.list_indexes("public", limit=7), 2),
+            (lambda db: db.list_functions("public", limit=7), 2),
+            (lambda db: db.table_health("public", limit=7), 2),
+            (lambda db: db.table_sizes("public", limit=7), 2),
+            (lambda db: db.unused_indexes("public", limit=7), 2),
+            (lambda db: db.sequence_health("public", limit=7), 2),
+            (lambda db: db.matview_status("public", limit=7), 2),
+            (lambda db: db.search_columns("email", "public", limit=7), 3),
+        ],
+    )
+    async def test_limit_is_a_bind_parameter(
+        self, call: Callable[[AsyncpgDatabase], Awaitable[object]], position: int
+    ) -> None:
+        pool = AsyncMock()
+        pool.fetch.return_value = []
+        db = AsyncpgDatabase(pool=pool, server_version_num=170000)
+
+        await call(db)
+
+        sql, *args = pool.fetch.call_args[0]
+        assert f"LIMIT ${position}" in sql
+        assert args[position - 1] == 7
+
+    async def test_default_limit_is_100(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+        pool.fetch.return_value = []
+        await db.list_tables("public")
+        assert pool.fetch.call_args[0][2] == 100
+
+    @pytest.mark.parametrize(("requested", "bound"), [(5000, 1000), (0, 1), (-3, 1)])
+    async def test_limit_is_clamped(
+        self, db: AsyncpgDatabase, pool: AsyncMock, requested: int, bound: int
+    ) -> None:
+        pool.fetch.return_value = []
+        await db.list_tables("public", limit=requested)
+        assert pool.fetch.call_args[0][2] == bound

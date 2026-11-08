@@ -88,7 +88,7 @@ class AsyncpgDatabase:
         )
         return dict(row) if row else {}
 
-    async def list_indexes(self, schema: str) -> list[dict[str, object]]:
+    async def list_indexes(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -115,12 +115,14 @@ class AsyncpgDatabase:
                     ON s.indexrelid = ix.indexrelid
                 WHERE n.nspname = $1
                 ORDER BY t.relname, i.relname
+                LIMIT $2
                 """,
                 schema,
+                min(max(limit, 1), 1000),
             )
         ]
 
-    async def list_tables(self, schema: str) -> list[dict[str, object]]:
+    async def list_tables(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -136,12 +138,14 @@ class AsyncpgDatabase:
                     AND s.relname = t.table_name
                 WHERE t.table_schema = $1 AND t.table_type = 'BASE TABLE'
                 ORDER BY s.n_live_tup DESC NULLS LAST
+                LIMIT $2
                 """,
                 schema,
+                min(max(limit, 1), 1000),
             )
         ]
 
-    async def list_views(self, schema: str) -> list[dict[str, object]]:
+    async def list_views(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -159,8 +163,10 @@ class AsyncpgDatabase:
                 FROM information_schema.views v
                 WHERE v.table_schema = $1
                 ORDER BY v.table_name
+                LIMIT $2
                 """,
                 schema,
+                min(max(limit, 1), 1000),
             )
         ]
 
@@ -473,7 +479,9 @@ class AsyncpgDatabase:
                 )
                 return self._rows(rows)
 
-    async def search_columns(self, keyword: str, schema: str) -> list[dict[str, object]]:
+    async def search_columns(
+        self, keyword: str, schema: str, limit: int = 100
+    ) -> list[dict[str, object]]:
         escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return [
             dict(r)
@@ -484,9 +492,11 @@ class AsyncpgDatabase:
                 WHERE table_schema = $1
                     AND column_name ILIKE '%' || $2 || '%'
                 ORDER BY table_name, ordinal_position
+                LIMIT $3
                 """,
                 schema,
                 escaped,
+                min(max(limit, 1), 1000),
             )
         ]
 
@@ -511,7 +521,7 @@ class AsyncpgDatabase:
             )
         ]
 
-    async def table_health(self, schema: str) -> list[dict[str, object]]:
+    async def table_health(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
         # PG18: cumulative maintenance timings on pg_stat_all_tables, relallfrozen on pg_class.
         pg18_columns = (
             """
@@ -557,8 +567,10 @@ class AsyncpgDatabase:
                 JOIN pg_class c ON c.oid = s.relid
                 WHERE s.schemaname = $1
                 ORDER BY s.n_live_tup DESC NULLS LAST
+                LIMIT $2
                 """,
                 schema,
+                min(max(limit, 1), 1000),
             )
         ]
 
@@ -1209,7 +1221,7 @@ class AsyncpgDatabase:
 
     # -- Size & bloat analysis --
 
-    async def table_sizes(self, schema: str) -> list[dict[str, object]]:
+    async def table_sizes(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -1224,12 +1236,14 @@ class AsyncpgDatabase:
                 JOIN pg_namespace n ON c.relnamespace = n.oid
                 WHERE n.nspname = $1 AND c.relkind = 'r'
                 ORDER BY pg_total_relation_size(c.oid) DESC
+                LIMIT $2
                 """,
                 schema,
+                min(max(limit, 1), 1000),
             )
         ]
 
-    async def unused_indexes(self, schema: str) -> list[dict[str, object]]:
+    async def unused_indexes(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -1249,14 +1263,16 @@ class AsyncpgDatabase:
                     AND NOT i.indisunique
                     AND NOT i.indisprimary
                 ORDER BY pg_relation_size(s.indexrelid) DESC
+                LIMIT $2
                 """,
                 schema,
+                min(max(limit, 1), 1000),
             )
         ]
 
     # -- Functions, triggers, policies --
 
-    async def list_functions(self, schema: str) -> list[dict[str, object]]:
+    async def list_functions(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -1285,8 +1301,10 @@ class AsyncpgDatabase:
                 WHERE n.nspname = $1
                     AND p.prokind != 'a'
                 ORDER BY p.proname
+                LIMIT $2
                 """,
                 schema,
+                min(max(limit, 1), 1000),
             )
         ]
 
@@ -1354,7 +1372,7 @@ class AsyncpgDatabase:
 
     # -- Sequences & materialized view health --
 
-    async def sequence_health(self, schema: str) -> list[dict[str, object]]:
+    async def sequence_health(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -1380,12 +1398,14 @@ class AsyncpgDatabase:
                 FROM pg_sequences s
                 WHERE s.schemaname = $1
                 ORDER BY pct_consumed DESC NULLS LAST
+                LIMIT $2
                 """,
                 schema,
+                min(max(limit, 1), 1000),
             )
         ]
 
-    async def matview_status(self, schema: str) -> list[dict[str, object]]:
+    async def matview_status(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
         return [
             dict(r)
             for r in await self.pool.fetch(
@@ -1408,7 +1428,9 @@ class AsyncpgDatabase:
                 FROM pg_matviews m
                 WHERE m.schemaname = $1
                 ORDER BY m.matviewname
+                LIMIT $2
                 """,
                 schema,
+                min(max(limit, 1), 1000),
             )
         ]
