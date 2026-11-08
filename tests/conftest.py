@@ -12,6 +12,8 @@ from pglens.database import AsyncpgDatabase
 def _setup_sql() -> str:
     return """
 CREATE TYPE order_status AS ENUM ('pending', 'confirmed', 'shipped', 'delivered');
+CREATE SCHEMA audit;
+CREATE TYPE audit.order_status AS ENUM ('logged');
 
 CREATE TABLE users (
     id serial PRIMARY KEY,

@@ -355,7 +355,9 @@ class AsyncpgDatabase:
             limit,
         )
 
-    async def search_enum_values(self, keyword: str) -> list[dict[str, object]]:
+    async def search_enum_values(
+        self, keyword: str, schema: str, limit: int = 100
+    ) -> list[dict[str, object]]:
         return await self._fetch(
             """
             SELECT
@@ -365,11 +367,15 @@ class AsyncpgDatabase:
             FROM pg_type t
             JOIN pg_namespace n ON t.typnamespace = n.oid
             JOIN pg_enum e ON t.oid = e.enumtypid
-            WHERE t.typname ILIKE '%' || $1 || '%'
+            WHERE n.nspname = $1
+                AND t.typname ILIKE '%' || $2 || '%'
             GROUP BY n.nspname, t.typname
-            ORDER BY n.nspname, t.typname
+            ORDER BY t.typname
+            LIMIT $3
             """,
+            schema,
             like_pattern(keyword),
+            limit,
         )
 
     # -- One table in depth --

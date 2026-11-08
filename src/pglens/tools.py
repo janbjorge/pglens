@@ -109,7 +109,8 @@ async def list_objects(
         case "sequence":
             rows, name_keys = await source.sequence_health(schema, page), ("sequence_name",)
         case "enum":
-            rows, name_keys = await source.search_enum_values(pattern or ""), ("enum_name",)
+            rows = await source.search_enum_values(pattern or "", schema, limit)
+            name_keys = ("enum_name",)
         case "extension":
             rows, name_keys = await source.list_extensions(), ("extname",)
         case "column":

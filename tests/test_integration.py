@@ -292,7 +292,8 @@ class TestDataExploration:
         assert any(r["table_name"] == "users" and r["column_name"] == "email" for r in result)
 
     async def test_search_enum_values(self, db: AsyncpgDatabase) -> None:
-        result = await db.search_enum_values("order_status")
+        # audit.order_status shares the name and must not leak into public.
+        result = await db.search_enum_values("order_status", "public")
         assert len(result) == 1
         assert result[0]["schema"] == "public"
         assert result[0]["enum_name"] == "order_status"
