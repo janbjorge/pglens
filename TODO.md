@@ -12,13 +12,13 @@ Rules
 
 ## Baseline
 
-| Metric | Value (2026-11-08) |
+| Metric | Value (2026-11-08, after item 1) |
 |---|---|
 | Tools | 31 |
-| Tool-definition JSON, compact | 23,911 chars (about 6k tokens at 4 chars/token) |
-| Average per tool | 773 chars |
-| Largest tools | list_indexes 1,077, table_health 1,071, io_stats 1,050 |
-| Parameters with a `description` in the schema | 0 |
+| Tool-definition JSON, compact | 32,996 chars (about 8k tokens at 4 chars/token) |
+| Average per tool | 1,064 chars |
+| Largest tools | query 1,770, explain_query 1,578, find_join_path 1,377 |
+| Parameters with a `description` in the schema | 76 of 76 |
 | Tools with annotations | 0 |
 | Server `instructions` | none |
 | `query_guide` prompt | 3,797 chars |
@@ -46,33 +46,6 @@ EOF
 ```
 
 Token figures are chars/4 estimates, not tokenizer counts. Good enough to track direction.
-
-## 1. Make parameter descriptions reach the schema
-
-Win: very high. Effort: small. All clients.
-
-Why
-- Every alias in `src/pglens/core/types.py` is `Annotated[T, "text"]`. mcp 2.0.0 builds the input schema from pydantic `FieldInfo` only (`mcp/server/mcpserver/utilities/func_metadata.py`), so a bare string is dropped. The dumped schema shows only `title` and `type`. The model never sees that `$1` placeholders are rejected, that large offsets are slow, or which `object_type` values exist. Verified with a two-tool probe: `Annotated[int, Field(description=...)]` surfaces, `Annotated[str, "text"]` does not.
-- CLAUDE.md line 46 claims the descriptions surface. That is wrong until this ships.
-- Anthropic, Writing effective tools for agents: descriptions and unambiguous parameters are the main lever on tool-use accuracy. https://www.anthropic.com/engineering/writing-tools-for-agents
-
-Change
-- `src/pglens/core/types.py`: `Annotated[T, Field(description="...")]` for every alias (`from pydantic import Field`). Keep the existing texts, they are good.
-- Add range constraints that match the adapter clamps: `SampleSize`, `TopN`, `TopQueries` `Field(ge=1, le=100)`; `MaxDepth` `ge=1, le=6`; `Limit` `ge=1, le=500`; `Offset` `ge=0`. Keep the clamps in `AsyncpgDatabase` as defense in depth.
-- `ObjectType` becomes `Literal["table", "view", "matview", "function", "sequence", "index"]` so the schema carries an `enum`. `object_type_to_relkind` keeps its `ValueError` for unknown values.
-- Optional: `@mcp.tool(structured_output=False)` drops the auto-generated `outputSchema` that wraps every result as `{"result": [...]}`. Only do it if the eval (item 6) shows no client depends on it.
-
-Regression tests (`tests/test_tool_registration.py`)
-- `test_every_parameter_has_a_description`: for every tool from `mcp.list_tools()`, every entry in `tool.input_schema["properties"]` has a non-empty `description`.
-- `test_object_type_is_an_enum`: `object_dependencies` schema has `properties.object_type.enum == ["table", "view", "matview", "function", "sequence", "index"]`.
-- `test_ranges_are_in_schema`: `sample_rows.n` has `minimum == 1` and `maximum == 100`; `query.limit` has `maximum == 500`; `query.offset` has `minimum == 0`.
-- `test_sql_description_mentions_placeholders`: `query` and `explain_query` `sql` description contains `$1`.
-
-Done when
-- Baseline script prints described params equal to total params for all tools. Total chars will grow by several thousand; that is intended.
-
-Docs
-- CLAUDE.md line 46: say `Annotated[..., Field(description=...)]`, and that bare strings are ignored by the SDK.
 
 ## 2. Add server instructions
 
@@ -151,7 +124,7 @@ Docs
 Win: high. Effort: medium. All clients.
 
 Why
-- Tool definitions cost about 6k tokens once per session and are prompt-cached. Tool output is paid on every call and stays in context. `list_functions` selects `p.prosrc` for every function in the schema, `list_views` returns every view definition, `list_indexes` returns every index definition, `describe_table` returns six sections, and `query`, `sample_rows`, `search_data` return `SELECT *` rows with unbounded cell sizes (text, json, bytea).
+- Tool definitions cost about 8k tokens once per session and are prompt-cached. Tool output is paid on every call and stays in context. `list_functions` selects `p.prosrc` for every function in the schema, `list_views` returns every view definition, `list_indexes` returns every index definition, `describe_table` returns six sections, and `query`, `sample_rows`, `search_data` return `SELECT *` rows with unbounded cell sizes (text, json, bytea).
 - Anthropic: use "pagination, range selection, filtering, and/or truncation" with sensible defaults, and treat every tool response as spend from a finite attention budget. https://www.anthropic.com/engineering/writing-tools-for-agents
 - Claude Code warns above 10,000 output tokens per call, caps at 25,000 by default (`MAX_MCP_OUTPUT_TOKENS`), and writes text results over 50,000 characters to a file unless the tool declares `_meta["anthropic/maxResultSizeChars"]`. https://code.claude.com/docs/en/mcp
 - DBHub's `search_objects` uses `detail_level` `names`, `summary`, `full` for the same reason. https://dbhub.ai/tools/search-objects.md
@@ -229,7 +202,7 @@ Target surface (adapter methods and their tests stay; only `adapters/tools/*.py`
 
 Regression tests
 - `tests/test_tool_registration.py`: `EXPECTED_TOOLS` becomes the 9 names; `test_no_unexpected_tools` locks the surface. `test_tool_delegates_to_db_method` currently asserts exactly one db call per tool; change it to a mapping from (tool, arguments) to the exact ordered list of `AsyncpgDatabase` methods expected, and parametrize over every `kind`, `check` and `view` value so each enum member is wired. `health(checks=None)` must call all seven methods; `health(checks=["io"])` exactly one.
-- `test_tool_definition_budget`: total compact JSON of `mcp.list_tools()` stays under 14,000 characters. Stops regrowth.
+- `test_tool_definition_budget`: total compact JSON of `mcp.list_tools()` stays under 14,000 characters. Stops regrowth. Today's 31 described tools measure 32,996 characters, 1,064 each; 9 richer tools at about 1,500 each fit.
 - `test_tool_count`: `len(mcp.list_tools()) <= 10`.
 - Item 2's `test_instructions_name_only_real_tools` and item 6's task test catch stale names.
 - `tests/test_integration.py`: one test per new tool against postgres:18. `list_objects(kind="column", pattern="email")` finds the seeded column; `describe_object` on the seeded table returns the trigger and the policy; `column_profile` returns both sections; `health()` returns all seven keys; `activity()` returns all four.
