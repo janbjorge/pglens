@@ -22,7 +22,7 @@ Rules
 | Tools with annotations | 9 of 9 |
 | Server `instructions` | 2,252 chars |
 | `query_guide` prompt | same text as the instructions |
-| Eval (`evals/run.py`, claude-opus-5-5, 21 tasks) | 21 of 21 passed, 39 tool calls, 11 picks outside `expect_tools`, 753k input tokens (`evals/results/0601988.json`); the 31-tool baseline was 21 of 21, 38 calls, 13 picks, 841k tokens (`evals/results/5674c3e-dirty.json`) |
+| Eval (`evals/run.py`, claude-opus-5-5, 21 tasks) | 21 of 21 passed, 39 tool calls, 11 picks outside `expect_tools`, 753k input tokens (run at 0601988); the 31-tool baseline was 21 of 21, 38 calls, 13 picks, 841k tokens (run at 5674c3e) |
 
 Measure with:
 

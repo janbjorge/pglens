@@ -75,12 +75,6 @@ CREATE UNIQUE INDEX ON order_summary (user_id);
 
 CREATE INDEX idx_users_bio ON users(bio);
 
-CREATE TABLE api_keys (
-    id serial PRIMARY KEY,
-    token uuid NOT NULL,
-    label text
-);
-
 CREATE SEQUENCE countdown INCREMENT -1 START 1000 MINVALUE 0 MAXVALUE 1000;
 SELECT nextval('countdown');
 
@@ -107,9 +101,6 @@ INSERT INTO shipping_regions (country_code, region_code, name) VALUES
     ('US', 'CA', 'California'), ('US', 'NY', 'New York');
 INSERT INTO warehouses (country_code, region_code, name)
     VALUES ('US', 'CA', 'West Coast Warehouse');
-INSERT INTO api_keys (token, label) VALUES
-    ('11111111-2222-3333-4444-555555555555', 'ci token'),
-    ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'deploy token');
 
 REFRESH MATERIALIZED VIEW order_summary;
 ANALYZE;
