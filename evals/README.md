@@ -38,8 +38,8 @@ any change to a tool, its parameters or the server instructions, and update the 
 | Metric | Value |
 |---|---|
 | Tools | 9 |
-| Tool-definition JSON, compact | 15,540 chars (about 4k tokens at 4 chars/token); `test_tool_definition_budget` caps it at 16,000 |
-| Average per tool | 1,727 chars |
+| Tool-definition JSON, compact | 15,600 chars (about 4k tokens at 4 chars/token); `test_tool_definition_budget` caps it at 16,000 |
+| Average per tool | 1,733 chars |
 | Largest tools | list_objects 2,481, query 2,059, describe_object 1,935 |
 | Parameters with a `description` in the schema | 36 of 36 |
 | Tools with annotations | 9 of 9 |

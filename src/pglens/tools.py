@@ -267,7 +267,8 @@ async def health(
     backend type (PostgreSQL 16+). slow_queries: top statements by total execution time
     from pg_stat_statements, or install instructions when the extension is missing.
     checks=None runs all seven; name one or more to narrow. limit caps the rows per
-    check, worst first.
+    check: biggest tables and indexes, most consumed sequences and slowest statements
+    first; matviews come by name and io returns every row.
     """
     source = db(ctx, database)
     result: dict[str, object] = {}
