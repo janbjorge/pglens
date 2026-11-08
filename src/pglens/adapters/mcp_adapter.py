@@ -61,7 +61,51 @@ async def app_lifespan(_server: MCPServer[Databases]) -> AsyncIterator[Databases
         yield Databases(databases, aliases.default)
 
 
-mcp = MCPServer("pglens", lifespan=app_lifespan)
+# Sent to the client as server instructions on connect and returned by the
+# query_guide prompt. Clients cut instructions at 4,096 characters, so the
+# important part comes first.
+INSTRUCTIONS = """\
+pglens gives read-only access to one PostgreSQL database: schema, data, query plans,
+performance and current activity. It cannot write or run DDL. Use its tools for any
+question about this database's tables, columns, values, relationships, query plans,
+slow queries, locks, replication or maintenance, instead of guessing from application code.
+
+Workflow for a data question:
+1. `database_info` for the PostgreSQL version, the database name and the configured aliases.
+2. `list_tables` to see what exists; `list_schemas` first when the data may live outside
+   public.
+3. `describe_table` for column names, types, primary and foreign keys and indexes before
+   writing any query against a table.
+4. `column_values` before filtering on status, type or category columns, so WHERE clauses
+   use values that exist. `column_stats` for numeric and date columns.
+5. `query` for read-only SQL, capped at 500 rows. `explain_query` first when a query may be
+   expensive.
+
+SQL idioms for `query` (inline literal values; $1 placeholders are rejected):
+- random sample: SELECT col_a, col_b FROM t ORDER BY random() LIMIT 5
+- distinct values with counts: SELECT status, count(*) FROM t GROUP BY 1 ORDER BY 2 DESC
+  LIMIT 20
+- exact row count: SELECT count(*) FROM t (list_tables shows estimates that can be stale)
+- large results: keyset pagination, WHERE id > last_seen_id ORDER BY id LIMIT 500, not a
+  growing OFFSET
+
+Other tools: `find_join_path` for tables several foreign keys apart; `sample_rows`,
+`search_data`, `search_columns` and `search_enum_values` for exploration; `list_views`,
+`list_indexes`, `list_functions`, `list_triggers`, `list_policies` and `list_extensions`
+for schema detail; `object_dependencies` before suggesting any DROP or ALTER;
+`slow_queries`, `table_health`, `table_sizes`, `unused_indexes`, `sequence_health`,
+`matview_status` and `io_stats` for health; `active_queries`, `blocking_locks`,
+`maintenance_progress` and `replication_status` for what is happening right now.
+
+Multiple databases: `database_info` returns available_databases, the configured aliases.
+Pass one of them as the database argument on any tool to target it; the default is the
+primary alias.
+
+Row-level security can hide rows: check `list_policies` when a query returns fewer rows
+than expected.
+"""
+
+mcp = MCPServer("pglens", instructions=INSTRUCTIONS, lifespan=app_lifespan)
 
 
 def db(ctx: Ctx, database: str | None = None) -> AsyncpgDatabase:
@@ -77,79 +121,7 @@ def databases(ctx: Ctx) -> Databases:
 @mcp.prompt()
 def query_guide() -> str:
     """Suggested workflow for exploring this database."""
-    return """\
-You are connected to a PostgreSQL database via MCP tools.
-
-Suggested workflow:
-
-1. `database_info` -- check Postgres version, database name, current user,
-   and configured database aliases (`available_databases`).
-2. `list_schemas` -- discover what schemas exist (not just public).
-3. `list_tables` -- see what exists (names, estimated row counts, descriptions).
-4. `describe_table` -- get column names, types, PKs, FKs (both directions
-   via `foreign_keys`/`referenced_by`), indexes.
-5. `find_join_path` -- find how to JOIN two tables that are multiple
-   FKs apart, with exact join conditions for each hop.
-6. `column_values` -- check actual values in low-cardinality columns
-   (status, type, category) before writing WHERE clauses.
-   `column_stats` -- get min/max/nulls/distribution for numeric or
-   date columns where column_values would return too many values.
-   `search_enum_values` -- check enum values before filtering.
-7. `sample_rows` -- see real data, NULL patterns, value formats.
-8. `search_columns` -- find a column by name across all tables.
-   `search_data` -- find rows matching a keyword across text columns.
-9. `explain_query` -- check the query plan before running expensive queries.
-10. `query` -- run read-only SQL (capped at 500 rows).
-
-Schema and discovery:
-- `list_views` -- views often have complex joins already done.
-- `list_extensions` -- check for PostGIS, pg_trgm, etc.
-- `list_indexes` -- all indexes across the schema with types, sizes, usage stats.
-- `list_functions` -- stored functions/procedures and their source code.
-- `list_triggers` -- triggers on a table (can silently modify data).
-- `list_policies` -- row-level security policies (can silently filter rows).
-
-Safety before DDL changes:
-- `object_dependencies` -- what views, functions, constraints depend on an
-  object. Always check before DROP or ALTER.
-
-Performance and health:
-- `slow_queries` -- top statements by total execution time (pg_stat_statements).
-  Start here for performance investigations.
-- `table_health` -- index hit rates, dead tuples, vacuum timestamps, and
-  transaction wraparound risk per table.
-- `table_sizes` -- disk usage per table, ranked by size.
-- `unused_indexes` -- indexes that are never scanned (wasted disk + write
-  overhead), including invalid ones from failed CREATE INDEX CONCURRENTLY.
-- `active_queries` -- currently running sessions and their queries.
-- `blocking_locks` -- lock wait chains (who blocks whom).
-- `replication_status` -- standby lag and replication slots (inactive slots
-  retain WAL and fill disks).
-- `sequence_health` -- sequences approaching exhaustion.
-- `matview_status` -- materialized view freshness and refresh eligibility.
-- `io_stats` -- cluster-wide I/O by backend type (autovacuum vs checkpointer vs
-  client backends), PostgreSQL 16+.
-- `maintenance_progress` -- live progress of running VACUUM / ANALYZE /
-  CREATE INDEX / CLUSTER.
-
-Multi-database:
-- `database_info` returns `available_databases`, the configured aliases. Pass
-  an alias as the `database` argument on any tool to target it (e.g.
-  `database='azure_sys'` to read Azure system metrics). Default targets the
-  primary alias.
-
-Tips:
-- Call list_schemas first if you suspect non-public schemas.
-- Call describe_table before querying a table for the first time.
-- Use find_join_path when you need to join tables that aren't directly related.
-- For an exact row count, run `query` with SELECT count(*) (list_tables shows
-  estimates that can be stale after bulk loads).
-- Check enum values and column_stats instead of guessing.
-- Prefer indexed columns in WHERE/JOIN (visible in describe_table).
-- Use specific columns instead of SELECT *.
-- Call object_dependencies before suggesting DDL changes.
-- Check list_policies if queries return fewer rows than expected.
-"""
+    return INSTRUCTIONS
 
 
 # Register tool modules — each module decorates tools onto `mcp` at import time.

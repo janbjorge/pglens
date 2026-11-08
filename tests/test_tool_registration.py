@@ -6,12 +6,13 @@ These tests catch:
 - Parameter name mismatches between tool layer and AsyncpgDatabase
 """
 
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
-from pglens.adapters.mcp_adapter import mcp
+from pglens.adapters.mcp_adapter import mcp, query_guide
 
 # Every tool that should be registered, mapped to the db method it delegates to.
 # Tools that do not delegate to AsyncpgDatabase (e.g. registry-level tools) map to None.
@@ -249,3 +250,25 @@ class TestToolSchemas:
                 "sample_rows", {"table_name": "users", "n": 1000}, _make_ctx(mock_db)
             )
         assert mock_db.method_calls == []
+
+
+class TestServerInstructions:
+    """Server instructions are the only guidance a client forwards to the model on connect.
+
+    Prompts are user-invoked, so the workflow has to travel as instructions too.
+    """
+
+    def test_server_has_instructions(self) -> None:
+        assert mcp.instructions
+        # Claude Code cuts server instructions at 4,096 characters.
+        assert len(mcp.instructions) <= 4096
+
+    def test_query_guide_matches_instructions(self) -> None:
+        assert query_guide() == mcp.instructions
+
+    def test_instructions_name_only_real_tools(self) -> None:
+        """Every backticked identifier in the instructions is a registered tool."""
+        assert mcp.instructions is not None
+        named = set(re.findall(r"`([a-z_]+)`", mcp.instructions))
+        unknown = named - _registered_tool_names()
+        assert not unknown, f"Instructions name tools that do not exist: {unknown}"
