@@ -101,7 +101,7 @@ pglens reads standard PostgreSQL environment variables (libpq). Connection strin
 | `PGLENS_STATEMENT_TIMEOUT` | no (default 60) | Per-statement timeout in seconds; `0` disables it |
 | `PGLENS_LOCK_TIMEOUT` | no (default 5) | How long a statement waits for a lock, in seconds; `0` disables it |
 | `PGLENS_IDLE_TX_TIMEOUT` | no (default 30) | Kills sessions idle inside an open transaction, in seconds; `0` disables it |
-| `PGLENS_MAX_CELL_CHARS` | no (default 1000) | Longest text cell `query`, `sample_rows` and `search_data` return; longer cells are cut and end with `…[truncated, N chars total]`; `0` disables it |
+| `PGLENS_MAX_CELL_CHARS` | no (default 1000) | Longest text cell `query` returns; longer cells are cut and end with `…[truncated, N chars total]`; `0` disables it |
 
 pglens reads no connection-string env vars. Configuration goes through libpq env vars only.
 
@@ -212,7 +212,7 @@ Discover what is configured via `database_info` (the `available_databases` key),
 
 ```text
 database_info() -> {..., "available_databases": ["app", "azure_sys"]}
-table_sizes(schema="public", database="azure_sys")
+health(checks=["sizes"], database="azure_sys")
 query(sql="SELECT * FROM query_store.qs_view LIMIT 10", database="azure_sys")
 ```
 

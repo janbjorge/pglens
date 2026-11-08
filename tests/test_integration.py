@@ -246,32 +246,11 @@ class TestRelationships:
 
 
 class TestDataExploration:
-    async def test_sample_rows(self, db: AsyncpgDatabase) -> None:
-        rows = await db.sample_rows("users", 10, "public")
-        assert len(rows) == 3  # We inserted 3 users
-        assert "username" in rows[0]
-
     async def test_column_values(self, db: AsyncpgDatabase) -> None:
         result = await db.column_values("orders", "status", 10, "public")
         assert len(result) >= 1
         values = {r["value"] for r in result}
         assert "pending" in values
-
-    async def test_search_data(self, db: AsyncpgDatabase) -> None:
-        result = await db.search_data("users", "alice", "public")
-        assert len(result) >= 1
-        assert any(r["username"] == "alice" for r in result)
-
-    async def test_search_data_no_match(self, db: AsyncpgDatabase) -> None:
-        result = await db.search_data("users", "zzz_nonexistent_zzz", "public")
-        assert result == []
-
-    async def test_search_data_like_wildcards_escaped(self, db: AsyncpgDatabase) -> None:
-        """Searching for literal '%' should not match everything."""
-        result = await db.search_data("users", "100%", "public")
-        # Only charlie has "100%" in bio
-        assert len(result) == 1
-        assert result[0]["username"] == "charlie"
 
     async def test_search_columns(self, db: AsyncpgDatabase) -> None:
         result = await db.search_columns("email", "public")
@@ -289,11 +268,6 @@ class TestDataExploration:
         vals = result[0]["values"]
         assert "pending" in vals
         assert "delivered" in vals
-
-    async def test_search_data_uuid_column(self, db: AsyncpgDatabase) -> None:
-        result = await db.search_data("api_keys", "11111111", "public")
-        assert len(result) == 1
-        assert result[0]["label"] == "ci token"
 
     async def test_column_stats(self, db: AsyncpgDatabase) -> None:
         result = await db.column_stats("users", "username", "public")

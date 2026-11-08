@@ -16,7 +16,9 @@ uv run python evals/run.py --model claude-sonnet-5-5
 ```
 
 Results land in `results/<git-sha>.json` (`-dirty` is appended when the working
-tree has uncommitted changes), with a summary table printed at the end. Each
+tree has uncommitted changes), with a summary table printed at the end. The
+`results/` directory is gitignored: copy the summary numbers into the Baseline
+table in `TODO.md` rather than committing the file. Each
 task records the ordered pglens tool calls, the calls that were not in
 `expect_tools` (unexpected picks), the built-in tools used (ToolSearch), the token
 usage, cost, wall time and pass/fail.

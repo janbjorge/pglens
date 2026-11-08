@@ -420,59 +420,6 @@ class TestListMethods:
         assert result == [{"extname": "plpgsql", "extversion": "1.0", "description": "PL/pgSQL"}]
 
 
-class TestSearchData:
-    async def test_search_data_no_text_columns(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
-        pool.fetch.return_value = []
-        result = await db.search_data("numbers_only", "foo", "public")
-        assert result == []
-
-    async def test_search_data_builds_conditions(self) -> None:
-        conn = mock_conn()
-        pool = mock_pool_with_conn(conn)
-        pool.fetch.return_value = [
-            make_record(safe_name='"name"'),
-            make_record(safe_name='"email"'),
-        ]
-        db = AsyncpgDatabase(pool=pool)
-
-        await db.search_data("users", "test", "public")
-
-        sql = conn.fetch.call_args[0][0]
-        assert '"name"::text ILIKE $1' in sql
-        assert '"email"::text ILIKE $1' in sql
-        assert " OR " in sql
-
-
-class TestSampleRows:
-    async def test_sample_rows_clamps_to_100(self) -> None:
-        conn = mock_conn()
-        pool = mock_pool_with_conn(conn)
-        db = AsyncpgDatabase(pool=pool)
-
-        await db.sample_rows("big_table", 999, "public")
-
-        assert conn.fetch.call_args[0][1] == 100
-
-    async def test_sample_rows_respects_small_n(self) -> None:
-        conn = mock_conn()
-        pool = mock_pool_with_conn(conn)
-        db = AsyncpgDatabase(pool=pool)
-
-        await db.sample_rows("small_table", 3, "public")
-
-        assert conn.fetch.call_args[0][1] == 3
-
-    @pytest.mark.parametrize("n", [0, -5])
-    async def test_sample_rows_clamps_low_n_to_1(self, n: int) -> None:
-        conn = mock_conn()
-        pool = mock_pool_with_conn(conn)
-        db = AsyncpgDatabase(pool=pool)
-
-        await db.sample_rows("small_table", n, "public")
-
-        assert conn.fetch.call_args[0][1] == 1
-
-
 class TestColumnValues:
     async def test_column_values_clamps_top_n(self) -> None:
         conn = mock_conn(fetch_return=[make_record(value="active", frequency=42)])
@@ -876,24 +823,6 @@ class TestCellTruncation:
         [row] = await db.query("SELECT body FROM posts")
 
         assert row["body"] == "x" * 5000
-
-    async def test_sample_rows_truncates(self) -> None:
-        conn = mock_conn(fetch_return=[make_record(bio="y" * 2000)])
-        db = AsyncpgDatabase(pool=mock_pool_with_conn(conn), max_cell_chars=10)
-
-        [row] = await db.sample_rows("users", 1, "public")
-
-        assert row["bio"] == "y" * 10 + "…[truncated, 2000 chars total]"
-
-    async def test_search_data_truncates(self) -> None:
-        conn = mock_conn(fetch_return=[make_record(body="z" * 2000)])
-        pool = mock_pool_with_conn(conn)
-        pool.fetch.return_value = [make_record(safe_name='"body"')]
-        db = AsyncpgDatabase(pool=pool, max_cell_chars=10)
-
-        [row] = await db.search_data("posts", "zz", "public")
-
-        assert row["body"] == "z" * 10 + "…[truncated, 2000 chars total]"
 
 
 class TestListLimit:

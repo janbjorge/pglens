@@ -65,8 +65,7 @@ class AsyncpgDatabase:
     pool: asyncpg.Pool
     # Cached numeric server version (e.g. 180001). None until first use; injectable in tests.
     server_version_num: int | None = None
-    # Longest text cell returned by the row-returning methods (query, sample_rows,
-    # search_data). Longer cells are cut and marked; 0 disables the cut.
+    # Longest text cell query returns. Longer cells are cut and marked; 0 disables the cut.
     max_cell_chars: int = 1000
 
     async def _get_server_version_num(self) -> int:
@@ -455,16 +454,6 @@ class AsyncpgDatabase:
             "paths": formatted_paths,
         }
 
-    async def sample_rows(self, table_name: str, n: int, schema: str) -> list[dict[str, object]]:
-        ref = self.safe_table_ref(schema, table_name)
-        async with self.pool.acquire() as conn:
-            async with conn.transaction(readonly=True):
-                rows = await conn.fetch(
-                    f"SELECT * FROM {ref} ORDER BY random() LIMIT $1",
-                    min(max(n, 1), 100),
-                )
-                return self._rows(rows)
-
     async def column_values(
         self, table_name: str, column_name: str, top_n: int, schema: str
     ) -> list[dict[str, object]]:
@@ -487,38 +476,6 @@ class AsyncpgDatabase:
                         min(max(top_n, 1), 100),
                     )
                 ]
-
-    async def search_data(
-        self, table_name: str, keyword: str, schema: str
-    ) -> list[dict[str, object]]:
-        text_cols = await self.pool.fetch(
-            """
-            SELECT quote_ident(column_name) AS safe_name
-            FROM information_schema.columns
-            WHERE table_schema = $1 AND table_name = $2
-                AND (data_type IN ('text', 'character varying', 'character', 'name')
-                     OR udt_name IN ('citext', 'uuid'))
-            ORDER BY ordinal_position
-            """,
-            schema,
-            table_name,
-        )
-        if not text_cols:
-            return []
-        ref = self.safe_table_ref(schema, table_name)
-        escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        conditions = " OR ".join(f"{r['safe_name']}::text ILIKE $1" for r in text_cols)
-        async with self.pool.acquire() as conn:
-            async with conn.transaction(readonly=True):
-                rows = await conn.fetch(
-                    f"""
-                    SELECT * FROM {ref}
-                    WHERE {conditions}
-                    LIMIT 50
-                    """,
-                    f"%{escaped}%",
-                )
-                return self._rows(rows)
 
     async def search_columns(
         self, keyword: str, schema: str, limit: int = 100

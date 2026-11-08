@@ -114,8 +114,8 @@ class Settings(BaseSettings):
     max_cell_chars: NonNegativeInt = Field(
         default=1000,
         description=(
-            "Longest text cell, in characters, that query, sample_rows and "
-            "search_data return. Longer cells are cut and end with a marker "
+            "Longest text cell, in characters, that query returns. "
+            "Longer cells are cut and end with a marker "
             "giving the full length, so one wide json or text column cannot "
             "flood the model's context. 0 disables the cut."
         ),

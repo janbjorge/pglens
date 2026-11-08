@@ -23,3 +23,6 @@ htmlcov/
 
 # ruff
 .ruff_cache/
+
+# Eval runs cost API tokens and are run by hand; the summary row lives in TODO.md
+evals/results/
