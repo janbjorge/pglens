@@ -7,6 +7,7 @@ from typing import cast
 import asyncpg
 
 from pglens.core.sql import quote_ident, validate_select
+from pglens.core.types import DetailLevel
 
 
 def truncate_cell(value: object, max_chars: int) -> object:
@@ -18,6 +19,26 @@ def truncate_cell(value: object, max_chars: int) -> object:
     if max_chars > 0 and isinstance(value, str) and len(value) > max_chars:
         return f"{value[:max_chars]}…[truncated, {len(value)} chars total]"
     return value
+
+
+def select_detail(
+    rows: list[dict[str, object]],
+    detail: DetailLevel,
+    names: tuple[str, ...],
+    heavy: tuple[str, ...],
+) -> list[dict[str, object]]:
+    """Trim rows to the requested detail level.
+
+    names keeps only the identifying keys, summary drops the heavy keys
+    (definitions, source code), full returns the rows untouched.
+    """
+    match detail:
+        case "names":
+            return [{key: row[key] for key in names} for row in rows]
+        case "summary":
+            return [{key: value for key, value in row.items() if key not in heavy} for row in rows]
+        case _:
+            return rows
 
 
 def object_type_to_relkind(object_type: str) -> str:
@@ -88,8 +109,10 @@ class AsyncpgDatabase:
         )
         return dict(row) if row else {}
 
-    async def list_indexes(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
-        return [
+    async def list_indexes(
+        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+    ) -> list[dict[str, object]]:
+        rows = [
             dict(r)
             for r in await self.pool.fetch(
                 """
@@ -121,6 +144,9 @@ class AsyncpgDatabase:
                 min(max(limit, 1), 1000),
             )
         ]
+        return select_detail(
+            rows, detail, names=("index_name", "table_name"), heavy=("definition",)
+        )
 
     async def list_tables(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
         return [
@@ -145,8 +171,10 @@ class AsyncpgDatabase:
             )
         ]
 
-    async def list_views(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
-        return [
+    async def list_views(
+        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+    ) -> list[dict[str, object]]:
+        rows = [
             dict(r)
             for r in await self.pool.fetch(
                 """
@@ -169,6 +197,7 @@ class AsyncpgDatabase:
                 min(max(limit, 1), 1000),
             )
         ]
+        return select_detail(rows, detail, names=("view_name",), heavy=("definition",))
 
     async def list_extensions(self) -> list[dict[str, object]]:
         return [
@@ -182,7 +211,9 @@ class AsyncpgDatabase:
             )
         ]
 
-    async def describe_table(self, table_name: str, schema: str) -> dict[str, object]:
+    async def describe_table(
+        self, table_name: str, schema: str, detail: DetailLevel = "summary"
+    ) -> dict[str, object]:
         ref = self.safe_table_ref(schema, table_name)
 
         columns = [
@@ -219,6 +250,13 @@ class AsyncpgDatabase:
                 ref,
             )
         ]
+
+        if detail == "names":
+            return {
+                "table": f"{schema}.{table_name}",
+                "columns": [c["column_name"] for c in columns],
+                "primary_keys": primary_keys,
+            }
 
         foreign_keys = [
             dict(r)
@@ -309,6 +347,9 @@ class AsyncpgDatabase:
                 ref,
             )
         ]
+
+        if detail == "summary":
+            indexes = select_detail(indexes, detail, names=("index_name",), heavy=("definition",))
 
         return {
             "table": f"{schema}.{table_name}",
@@ -1272,8 +1313,10 @@ class AsyncpgDatabase:
 
     # -- Functions, triggers, policies --
 
-    async def list_functions(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
-        return [
+    async def list_functions(
+        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+    ) -> list[dict[str, object]]:
+        rows = [
             dict(r)
             for r in await self.pool.fetch(
                 """
@@ -1307,6 +1350,7 @@ class AsyncpgDatabase:
                 min(max(limit, 1), 1000),
             )
         ]
+        return select_detail(rows, detail, names=("function_name",), heavy=("source",))
 
     async def list_triggers(self, table_name: str, schema: str) -> list[dict[str, object]]:
         ref = self.safe_table_ref(schema, table_name)
@@ -1405,8 +1449,10 @@ class AsyncpgDatabase:
             )
         ]
 
-    async def matview_status(self, schema: str, limit: int = 100) -> list[dict[str, object]]:
-        return [
+    async def matview_status(
+        self, schema: str, limit: int = 100, detail: DetailLevel = "summary"
+    ) -> list[dict[str, object]]:
+        rows = [
             dict(r)
             for r in await self.pool.fetch(
                 """
@@ -1434,3 +1480,4 @@ class AsyncpgDatabase:
                 min(max(limit, 1), 1000),
             )
         ]
+        return select_detail(rows, detail, names=("matview_name",), heavy=("definition",))

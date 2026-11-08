@@ -217,6 +217,15 @@ class TestToolSchemas:
         ]
 
     @pytest.mark.parametrize(
+        "tool_name",
+        ["list_views", "list_indexes", "list_functions", "matview_status", "describe_table"],
+    )
+    async def test_detail_is_an_enum_defaulting_to_summary(self, tool_name: str) -> None:
+        prop = (await _properties(tool_name))["detail"]
+        assert prop["enum"] == ["names", "summary", "full"]
+        assert prop["default"] == "summary"
+
+    @pytest.mark.parametrize(
         "tool_name, param, minimum, maximum",
         [
             ("sample_rows", "n", 1, 100),

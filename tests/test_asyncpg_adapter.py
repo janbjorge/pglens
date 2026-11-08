@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase, truncate_cell
+from pglens.adapters.asyncpg_adapter import AsyncpgDatabase, select_detail, truncate_cell
 from pglens.core.sql import validate_select
 
 
@@ -407,7 +407,7 @@ class TestListMethods:
         pool.fetch.return_value = [
             make_record(view_name="active_orders", description=None, definition="SELECT ..."),
         ]
-        result = await db.list_views("public")
+        result = await db.list_views("public", detail="full")
         assert result == [
             {"view_name": "active_orders", "description": None, "definition": "SELECT ..."}
         ]
@@ -939,3 +939,91 @@ class TestListLimit:
         pool.fetch.return_value = []
         await db.list_tables("public", limit=requested)
         assert pool.fetch.call_args[0][2] == bound
+
+
+class TestDetailLevels:
+    """names keeps identifiers, summary drops definitions and source, full keeps everything."""
+
+    ROW = {"name": "f", "language": "plpgsql", "source": "BEGIN END"}
+
+    def test_select_detail(self) -> None:
+        rows = [dict(self.ROW)]
+        assert select_detail(rows, "names", ("name",), ("source",)) == [{"name": "f"}]
+        assert select_detail(rows, "summary", ("name",), ("source",)) == [
+            {"name": "f", "language": "plpgsql"}
+        ]
+        assert select_detail(rows, "full", ("name",), ("source",)) == [self.ROW]
+
+    @pytest.mark.parametrize(
+        ("call", "names", "heavy"),
+        [
+            (lambda db, d: db.list_functions("public", detail=d), {"function_name"}, "source"),
+            (lambda db, d: db.list_views("public", detail=d), {"view_name"}, "definition"),
+            (
+                lambda db, d: db.list_indexes("public", detail=d),
+                {"index_name", "table_name"},
+                "definition",
+            ),
+            (lambda db, d: db.matview_status("public", detail=d), {"matview_name"}, "definition"),
+        ],
+    )
+    async def test_list_methods_honor_detail(
+        self,
+        db: AsyncpgDatabase,
+        pool: AsyncMock,
+        call: Callable[[AsyncpgDatabase, str], Awaitable[list[dict[str, object]]]],
+        names: set[str],
+        heavy: str,
+    ) -> None:
+        record = dict.fromkeys(names, "x") | {"other": 1, heavy: "long text"}
+        pool.fetch.return_value = [make_record(**record)]
+
+        [names_row] = await call(db, "names")
+        [summary_row] = await call(db, "summary")
+        [full_row] = await call(db, "full")
+
+        assert set(names_row) == names
+        assert heavy not in summary_row and summary_row["other"] == 1
+        assert full_row[heavy] == "long text"
+
+    async def test_summary_is_the_default(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
+        pool.fetch.return_value = [make_record(function_name="f", source="BEGIN END")]
+        [row] = await db.list_functions("public")
+        assert row == {"function_name": "f"}
+
+    def _describe_results(self) -> list[list[MagicMock]]:
+        return [
+            [make_record(column_name="id", data_type="integer")],
+            [make_record(column_name="id")],
+            [],
+            [],
+            [make_record(index_name="orders_pkey", is_unique=True, definition="CREATE ...")],
+            [make_record(constraint_name="chk", definition="CHECK (id > 0)")],
+        ]
+
+    async def test_describe_table_summary_drops_index_definitions(
+        self, db: AsyncpgDatabase, pool: AsyncMock
+    ) -> None:
+        pool.fetch.side_effect = self._describe_results()
+        result = await db.describe_table("orders", "public")
+        assert result["indexes"] == [{"index_name": "orders_pkey", "is_unique": True}]
+        assert result["check_constraints"] == [
+            {"constraint_name": "chk", "definition": "CHECK (id > 0)"}
+        ]
+
+    async def test_describe_table_full_keeps_index_definitions(
+        self, db: AsyncpgDatabase, pool: AsyncMock
+    ) -> None:
+        pool.fetch.side_effect = self._describe_results()
+        result = await db.describe_table("orders", "public", detail="full")
+        assert result["indexes"] == [
+            {"index_name": "orders_pkey", "is_unique": True, "definition": "CREATE ..."}
+        ]
+
+    async def test_describe_table_names_stops_after_columns_and_keys(
+        self, db: AsyncpgDatabase, pool: AsyncMock
+    ) -> None:
+        pool.fetch.side_effect = self._describe_results()
+        result = await db.describe_table("orders", "public", detail="names")
+        assert result == {"table": "public.orders", "columns": ["id"], "primary_keys": ["id"]}
+        assert pool.fetch.call_count == 2

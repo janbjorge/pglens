@@ -62,7 +62,7 @@ class TestSchemaDiscovery:
         assert len(await db.list_tables("public", limit=2)) == 2
 
     async def test_list_views(self, db: AsyncpgDatabase) -> None:
-        views = await db.list_views("public")
+        views = await db.list_views("public", detail="full")
         names = [v["view_name"] for v in views]
         assert "active_orders" in names
         view = next(v for v in views if v["view_name"] == "active_orders")
@@ -107,6 +107,19 @@ class TestSchemaDiscovery:
         assert fn["language"] == "plpgsql"
         assert fn["volatility"] == "volatile"
         assert fn["kind"] == "function"
+        assert "source" not in fn  # summary is the default
+
+    async def test_list_functions_detail_levels(self, db: AsyncpgDatabase) -> None:
+        [names_row] = await db.list_functions("public", detail="names")
+        assert names_row == {"function_name": "update_modified_column"}
+        [full_row] = await db.list_functions("public", detail="full")
+        assert "NEW.created_at = now()" in str(full_row["source"])
+
+    async def test_list_views_definition_only_at_full(self, db: AsyncpgDatabase) -> None:
+        [summary_row] = await db.list_views("public")
+        assert "definition" not in summary_row
+        [full_row] = await db.list_views("public", detail="full")
+        assert "orders" in str(full_row["definition"])
 
 
 class TestDescribeTable:
@@ -156,6 +169,22 @@ class TestDescribeTable:
         # Verify correct pairing (not cross-product)
         for fk in sr_fks:
             assert fk["column_name"] == fk["foreign_column"]
+
+    async def test_index_definitions_only_at_full(self, db: AsyncpgDatabase) -> None:
+        summary = await db.describe_table("users", "public")
+        indexes = summary["indexes"]
+        assert isinstance(indexes, list) and indexes and "definition" not in indexes[0]
+        full = await db.describe_table("users", "public", detail="full")
+        full_indexes = full["indexes"]
+        assert isinstance(full_indexes, list) and "CREATE" in str(full_indexes[0]["definition"])
+
+    async def test_names_detail(self, db: AsyncpgDatabase) -> None:
+        result = await db.describe_table("users", "public", detail="names")
+        assert result == {
+            "table": "public.users",
+            "columns": ["id", "username", "email", "bio", "created_at"],
+            "primary_keys": ["id"],
+        }
 
     async def test_indexes(self, db: AsyncpgDatabase) -> None:
         result = await db.describe_table("users", "public")
