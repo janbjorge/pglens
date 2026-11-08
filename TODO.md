@@ -47,33 +47,9 @@ EOF
 
 Token figures are chars/4 estimates, not tokenizer counts. Good enough to track direction.
 
-## 6. Eval harness, prerequisite for item 7
-
-Win: enabling only. Effort: medium. Nobody until item 7.
-
-Why
-- Anthropic: "Start by generating lots of evaluation tasks, grounded in real world uses", pair each with a verifiable outcome, and "Tracking tool calls can help reveal common workflows that agents pursue and offer some opportunities for tools to consolidate." https://www.anthropic.com/engineering/writing-tools-for-agents
-- pglens has no usage data. Without a before/after measurement item 7 is opinion.
-
-Change
-- New directory `evals/`, not collected by pytest, not run in CI.
-- `evals/schema.sql`: a seed schema with 8 to 10 tables, FKs two hops deep, an enum type, a view, a matview, one plpgsql function, one trigger, one RLS policy, a never-scanned index, mixed-case status values. Reuse the fixtures in `tests/test_integration.py` where they fit.
-- `evals/tasks.json`: 15 to 20 tasks, each with `prompt`, `expected` (exact value, set of names, or regex), and `expect_tools` (the tool names a good run uses). Cover: distinct values before a WHERE, a two-hop join, "which tables reference X", a query plan question, an unused index question, one health and one activity question, one multi-database question.
-- `evals/run.py`: runs each task through `claude -p --mcp-config evals/mcp.json --output-format json` (or the Agent SDK), on the testcontainers postgres:18 image, and records per task: tool call sequence, wrong-tool picks (tools called that are not in `expect_tools`), input and output tokens, errors, wall time, pass/fail. Writes `evals/results/<git-sha>.json` and prints a summary table.
-- Cost note in `evals/README.md`: each full run spends API tokens; run by hand, compare two shas.
-
-Regression tests
-- `tests/test_evals_tasks.py`: `evals/tasks.json` parses, every task has the three keys, every `expect_tools` entry is a registered tool name (catches stale names after item 7), every `expected` compiles if it is a regex.
-
-Done when
-- One baseline run on main is committed under `evals/results/`.
-
-Docs
-- README "How it's built": one line pointing at `evals/`.
-
 ## 7. Consolidate 31 tools into 9
 
-Win: high. Effort: large. Largest for non-Claude clients. Ship only after item 6 shows parity or better.
+Win: high. Effort: large. Largest for non-Claude clients. Ship only if `evals/run.py` shows parity or better against the baseline below.
 
 Why
 - Selection accuracy falls as the catalogue grows: 92.4% at 15 tools to 78.2% at 640 (arXiv 2607.15593, https://arxiv.org/pdf/2607.15593); shorter candidate lists lift Claude Sonnet 4.6 from 87.1% to 93.1% (arXiv 2605.24660, https://arxiv.org/html/2605.24660v1); survey of the problem in https://doi.org/10.3390/a19060447.
@@ -82,6 +58,7 @@ Why
 - Comparable servers: DBHub ships 2 tools by default (`execute_sql`, `search_objects`), about 1.4k tokens, https://github.com/bytebase/dbhub; crystaldba postgres-mcp ships 9, with one `analyze_db_health(health_type=...)` for all health checks, https://github.com/crystaldba/postgres-mcp; Google MCP Toolbox's postgres preset ships 28 at about 19k tokens and gets criticized for it, https://dbhub.ai/blog/postgres-mcp-server-review-mcp-toolbox.
 - Code Mode (Cloudflare, `search()` plus `execute()`, https://blog.cloudflare.com/code-mode-mcp/; Anthropic, https://www.anthropic.com/engineering/code-execution-with-mcp) is the same shape: discovery plus execution. For Postgres the execution tool is `query`, SQL is the code, and the discovery tool is object search. See "Decided against" for why no extra sandbox.
 - In Claude Code the token win is already taken by tool search. The win there is fewer wrong picks and fewer overlapping tools. On every other client it is both.
+- Baseline `evals/results/5674c3e-dirty.json` (claude-opus-5-5, 21 tasks, 2026-11-08): 21 of 21 passed, 38 tool calls, 13 picks outside `expect_tools`, $1.17. In 7 tasks the model wrote catalog SQL through `query` instead of using the dedicated tool (`unused_indexes`, `table_sizes`, `search_enum_values`, `search_columns`, `list_functions`, `sequence_health`, `matview_status`), and in 2 more it followed the dedicated tool with a `query` to double-check. Never called: `sample_rows`, `search_data`, `search_enum_values`, `search_columns`, `list_functions`, `table_sizes`, `unused_indexes`, `list_schemas`, `list_indexes`, `column_stats`, `find_join_path`, `slow_queries`, `table_health`, `active_queries`, `replication_status`, `io_stats`, `maintenance_progress`, `list_extensions`. `describe_table` carried the join tasks (4 calls in `two_hop_join`). The model treats `query` as the universal tool; the consolidation should keep `query` central and fold the catalogue tools behind a few enum-parameterized entry points.
 
 Target surface (adapter methods and their tests stay; only `adapters/tools/*.py` changes)
 
@@ -97,7 +74,7 @@ Target surface (adapter methods and their tests stay; only `adapters/tools/*.py`
 | `health` | table_health, table_sizes, unused_indexes, sequence_health, matview_status, io_stats, slow_queries | `checks: list[Literal["tables","sizes","indexes","sequences","matviews","io","slow_queries"]] | None = None` (None means all), `schema`, `limit: TopQueries = 20` for slow_queries, `database`; returns a dict keyed by check. Use a list of literals, not a comma string, so the schema carries the enum |
 | `activity` | active_queries, blocking_locks, maintenance_progress, replication_status | `views: list[Literal["sessions","locks","maintenance","replication"]] | None = None`, `database`; dict keyed by view |
 
-- `sample_rows` and `search_data` are the most opinionated removals. Keep them if the item 6 baseline shows the model picking them often and succeeding; otherwise remove.
+- `sample_rows` and `search_data` were never called in the baseline; the model sampled with `query` on its own. Remove them.
 - Version-gated SQL (PG16/17/18 branches in `table_health`, `slow_queries`, `io_stats`, `maintenance_progress`, `replication_status`) is the knowledge worth keeping server-side. It moves untouched behind `health` and `activity`.
 - Breaking change: `feat!:` commit, BREAKING CHANGE footer listing all 22 removed names, major version tag, same as #20 did.
 
@@ -105,9 +82,9 @@ Regression tests
 - `tests/test_tool_registration.py`: `EXPECTED_TOOLS` becomes the 9 names; `test_no_unexpected_tools` locks the surface. `test_tool_delegates_to_db_method` currently asserts exactly one db call per tool; change it to a mapping from (tool, arguments) to the exact ordered list of `AsyncpgDatabase` methods expected, and parametrize over every `kind`, `check` and `view` value so each enum member is wired. `health(checks=None)` must call all seven methods; `health(checks=["io"])` exactly one.
 - `test_tool_definition_budget`: total compact JSON of `mcp.list_tools()` stays under 14,000 characters. Stops regrowth. Today's 31 described tools measure 32,996 characters, 1,064 each; 9 richer tools at about 1,500 each fit.
 - `test_tool_count`: `len(mcp.list_tools()) <= 10`.
-- Item 2's `test_instructions_name_only_real_tools` and item 6's task test catch stale names.
+- `test_instructions_name_only_real_tools` and `tests/test_evals_tasks.py` catch stale names.
 - `tests/test_integration.py`: one test per new tool against postgres:18. `list_objects(kind="column", pattern="email")` finds the seeded column; `describe_object` on the seeded table returns the trigger and the policy; `column_profile` returns both sections; `health()` returns all seven keys; `activity()` returns all four.
-- Run the item 6 eval on the branch and commit the result file next to the baseline. Ship only if pass rate is equal or better and wrong-tool picks are fewer.
+- Run `uv run python evals/run.py` on the branch and commit the result file next to the baseline. Ship only if pass rate stays at 21 of 21 and picks outside `expect_tools` are fewer than 13.
 
 Done when
 - Baseline table shows 9 tools and under 14,000 characters, eval result committed, README tables rewritten.
@@ -115,7 +92,7 @@ Done when
 Docs
 - README: the four tool tables collapse into one 9-row table; the opening line's "31 MCP tools" changes; the `column_values` call-out becomes `column_profile`.
 - CLAUDE.md: "31 tools" in the first paragraph; "Adding a new tool" becomes "Adding a capability": add a db method, then add a `kind`, `check` or `view` literal and its wiring, not a new tool.
-- Server instructions (`INSTRUCTIONS` in `mcp_adapter.py`) and `evals/tasks.json` (item 6) updated to the new names.
+- Server instructions (`INSTRUCTIONS` in `mcp_adapter.py`) and `evals/tasks.json` updated to the new names.
 
 ## 8. Feature groups, fallback only
 
@@ -142,7 +119,7 @@ Docs
 
 ## Decided against
 
-Code Mode sandbox tool (a JavaScript or Python `execute(code)` tool). SQL already is the code and PostgreSQL under `default_transaction_read_only=on`, `statement_timeout`, `lock_timeout` and `idle_in_transaction_session_timeout` already is the sandbox. Cloudflare: client-side Code Mode "requires the agent to ship with secure sandbox access" and "solves context costs for a single API" (https://blog.cloudflare.com/code-mode-mcp/). Anthropic: "Running agent-generated code requires a secure execution environment with appropriate sandboxing" (https://www.anthropic.com/engineering/code-execution-with-mcp). A sandbox adds attack surface and buys no context, because tool search already defers definitions on Claude clients and item 7 shrinks them everywhere else. Revisit only if the item 6 eval shows the model chaining five or more catalogue calls that one script would replace.
+Code Mode sandbox tool (a JavaScript or Python `execute(code)` tool). SQL already is the code and PostgreSQL under `default_transaction_read_only=on`, `statement_timeout`, `lock_timeout` and `idle_in_transaction_session_timeout` already is the sandbox. Cloudflare: client-side Code Mode "requires the agent to ship with secure sandbox access" and "solves context costs for a single API" (https://blog.cloudflare.com/code-mode-mcp/). Anthropic: "Running agent-generated code requires a secure execution environment with appropriate sandboxing" (https://www.anthropic.com/engineering/code-execution-with-mcp). A sandbox adds attack surface and buys no context, because tool search already defers definitions on Claude clients and item 7 shrinks them everywhere else. Revisit only if `evals/run.py` shows the model chaining five or more catalogue calls that one script would replace.
 
 ## References
 
