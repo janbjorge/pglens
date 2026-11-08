@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
-from pglens.core.sql import quote_ident
+from pglens.database import AsyncpgDatabase
+from pglens.sql import quote_ident
 
 # All tests in this file require the real database fixtures from conftest.py.
 # The `db` fixture is function-scoped and provides an AsyncpgDatabase backed

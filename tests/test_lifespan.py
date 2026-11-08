@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pglens.adapters.mcp_adapter import app_lifespan, mcp
+from pglens.server import app_lifespan, mcp
 
 
 def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,24 +1,54 @@
-"""Schema and discovery tools."""
+"""The nine MCP tools.
 
-from pglens.adapters.asyncpg_adapter import select_detail
-from pglens.adapters.mcp_adapter import ALWAYS_LOAD, READ_ONLY, Ctx, databases, db, mcp
-from pglens.core.types import (
+Each tool is a thin wrapper over one or more AsyncpgDatabase methods. The
+dispatching tools (list_objects, describe_object, health, activity) match on
+an enum parameter, one branch per member, so the catalogue stays behind a few
+entry points. Importing this module registers the tools on the server.
+"""
+
+from pglens.database import select_detail
+from pglens.server import ALWAYS_LOAD, READ_ONLY, Ctx, databases, db, mcp
+from pglens.types import (
+    SQL,
+    ActivityView,
+    ActivityViews,
+    Analyze,
+    Buffers,
+    ColumnName,
     Database,
     Detail,
+    HealthCheck,
+    HealthChecks,
+    HealthLimit,
+    Limit,
     ListLimit,
     MaxDepth,
     NamePattern,
     ObjectKind,
     ObjectName,
     ObjectType,
+    Offset,
     Schema,
     SourceTable,
+    TableName,
     TargetTable,
+    TopN,
 )
 
 # A name filter is applied after the fetch, so a filtered listing reads a whole
 # catalogue page first. This is the adapter's upper bound on limit.
 CATALOGUE_PAGE = 1000
+
+HEALTH_CHECKS: tuple[HealthCheck, ...] = (
+    "tables",
+    "sizes",
+    "indexes",
+    "sequences",
+    "matviews",
+    "io",
+    "slow_queries",
+)
+ACTIVITY_VIEWS: tuple[ActivityView, ...] = ("sessions", "locks", "maintenance", "replication")
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -157,3 +187,130 @@ async def find_join_path(
     across tables that are multiple foreign keys apart.
     """
     return await db(ctx, database).find_join_path(source_table, target_table, schema, max_depth)
+
+
+@mcp.tool(annotations=READ_ONLY, meta=ALWAYS_LOAD)
+async def column_profile(
+    ctx: Ctx,
+    table_name: TableName,
+    column_name: ColumnName,
+    top_n: TopN = 20,
+    schema: Schema = "public",
+    database: Database = None,
+) -> dict[str, object]:
+    """Profile one column. `stats`: null fraction, distinct count, min, max, most common
+    values and correlation from ANALYZE statistics, so it is cheap even on big tables.
+    `top_values`: the most frequent distinct values with their row counts, from a live
+    GROUP BY. Call this before filtering on status, type or category columns so WHERE
+    clauses use values that exist, and on numeric or date columns to learn the range.
+    """
+    source = db(ctx, database)
+    return {
+        "column": f"{schema}.{table_name}.{column_name}",
+        "stats": await source.column_stats(table_name, column_name, schema),
+        "top_values": await source.column_values(table_name, column_name, top_n, schema),
+    }
+
+
+@mcp.tool(annotations=READ_ONLY, meta=ALWAYS_LOAD)
+async def query(
+    ctx: Ctx,
+    sql: SQL,
+    limit: Limit = 500,
+    offset: Offset = 0,
+    database: Database = None,
+) -> list[dict[str, object]]:
+    """Execute a read-only SQL query and return up to 500 rows.
+    Use describe_object and column_profile first to ensure correct column names and
+    filter values. Sample rows with ORDER BY random() LIMIT 5; search text columns
+    with ILIKE '%keyword%'.
+    Supports limit/offset for pagination, but large offsets degrade performance.
+    For large result sets, prefer keyset pagination in your SQL
+    (e.g. WHERE id > last_seen_id ORDER BY id) over high offset values.
+    Text cells longer than the server's limit (default 1000 characters) are cut
+    and end with "…[truncated, N chars total]"; select a substring or a
+    json path when you need the rest.
+    """
+    return await db(ctx, database).query(sql, limit=limit, offset=offset)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def explain_query(
+    ctx: Ctx,
+    sql: SQL,
+    analyze: Analyze = False,
+    buffers: Buffers = False,
+    database: Database = None,
+) -> str:
+    """Get the EXPLAIN plan for a SQL query.
+    Use to check whether a query will use indexes before running it.
+    With analyze=True, actually executes the query to show real timings and row counts.
+    With buffers=True (requires analyze=True), shows buffer/cache hit statistics.
+    """
+    return await db(ctx, database).explain_query(sql, analyze=analyze, buffers=buffers)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def health(
+    ctx: Ctx,
+    checks: HealthChecks = None,
+    schema: Schema = "public",
+    limit: HealthLimit = 20,
+    database: Database = None,
+) -> dict[str, object]:
+    """Database health, one key per check. tables: per-table dead-tuple percentage, index
+    hit rate, transaction-ID wraparound risk and last vacuum/analyze (PostgreSQL 18 adds
+    vacuum/analyze time and the all-frozen fraction). sizes: disk per table including
+    indexes. indexes: never-scanned and invalid indexes, which cost writes for nothing.
+    sequences: percentage consumed; near 100 means INSERTs will start failing. matviews:
+    populated status and whether REFRESH CONCURRENTLY is possible. io: pg_stat_io by
+    backend type (PostgreSQL 16+). slow_queries: top statements by total execution time
+    from pg_stat_statements, or install instructions when the extension is missing.
+    checks=None runs all seven; name one or more to narrow. limit caps the rows per
+    check, worst first.
+    """
+    source = db(ctx, database)
+    result: dict[str, object] = {}
+    for check in dict.fromkeys(checks or HEALTH_CHECKS):
+        match check:
+            case "tables":
+                result[check] = await source.table_health(schema, limit)
+            case "sizes":
+                result[check] = await source.table_sizes(schema, limit)
+            case "indexes":
+                result[check] = await source.unused_indexes(schema, limit)
+            case "sequences":
+                result[check] = await source.sequence_health(schema, limit)
+            case "matviews":
+                result[check] = await source.matview_status(schema, limit)
+            case "io":
+                result[check] = await source.io_stats()
+            case "slow_queries":
+                result[check] = await source.slow_queries(limit)
+    return result
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def activity(
+    ctx: Ctx, views: ActivityViews = None, database: Database = None
+) -> dict[str, object]:
+    """What the server is doing right now, one key per view. sessions: every session
+    with its query, state, wait event and durations. locks: blocked sessions and the
+    sessions blocking them. maintenance: progress of running VACUUM, ANALYZE, CREATE
+    INDEX / REINDEX and CLUSTER / VACUUM FULL. replication: standbys with lag,
+    replication slots (an inactive slot retains WAL until the disk fills) and logical
+    subscription error and conflict counts. views=None returns all four.
+    """
+    source = db(ctx, database)
+    result: dict[str, object] = {}
+    for view in dict.fromkeys(views or ACTIVITY_VIEWS):
+        match view:
+            case "sessions":
+                result[view] = await source.active_queries()
+            case "locks":
+                result[view] = await source.blocking_locks()
+            case "maintenance":
+                result[view] = await source.maintenance_progress()
+            case "replication":
+                result[view] = await source.replication_status()
+    return result

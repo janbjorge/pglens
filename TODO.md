@@ -29,7 +29,7 @@ Measure with:
 ```bash
 uv run python - <<'EOF'
 import asyncio, json
-from pglens.adapters.mcp_adapter import mcp
+from pglens import mcp
 
 async def main():
     tools = await mcp.list_tools()

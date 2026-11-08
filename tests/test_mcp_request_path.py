@@ -22,8 +22,8 @@ import pytest
 from mcp.server.context import ServerRequestContext
 from mcp.server.mcpserver import Context
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
-from pglens.adapters.mcp_adapter import DEFAULT_DB, Databases, mcp
+from pglens.database import AsyncpgDatabase
+from pglens.server import DEFAULT_DB, Databases, mcp
 
 pytestmark = pytest.mark.usefixtures("pool")
 

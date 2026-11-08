@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
-from pglens.adapters.mcp_adapter import (
+from pglens.database import AsyncpgDatabase
+from pglens.server import (
     DEFAULT_DB,
     Databases,
     db,

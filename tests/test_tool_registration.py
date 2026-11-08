@@ -1,6 +1,6 @@
 """The MCP tool surface: which tools exist, how they delegate, and what the schema says.
 
-These tests catch a tool module that is no longer imported, an enum member that
+These tests catch a tool that is no longer registered, an enum member that
 is not wired to a database method, a parameter that reaches the client without a
 description, and regrowth of the tool-definition budget.
 """
@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from mcp.types import ListToolsResult
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
-from pglens.adapters.mcp_adapter import mcp, query_guide
+from pglens.database import AsyncpgDatabase
+from pglens.server import mcp, query_guide
 
 EXPECTED_TOOLS = {
     "database_info",
@@ -27,7 +27,6 @@ EXPECTED_TOOLS = {
     "health",
     "activity",
 }
-TOOL_MODULES = ("schema", "exploration", "query", "health")
 # Compact JSON of every tool definition. Measured after the consolidation; stops regrowth.
 DEFINITION_BUDGET_CHARS = 16_000
 
@@ -95,21 +94,15 @@ def _mock_db() -> AsyncMock:
 
 
 async def _run(tool_name: str, mock_db: AsyncMock, **kwargs: object) -> object:
-    """Call a tool function with every tool module's db() patched to mock_db."""
+    """Call a tool function with db() and databases() patched to mocks."""
     tool = mcp._tool_manager._tools[tool_name]
     mock_registry = MagicMock()
     mock_registry.names.return_value = ["default"]
-    patches = [
-        patch(f"pglens.adapters.tools.{mod}.db", return_value=mock_db) for mod in TOOL_MODULES
-    ]
-    patches.append(patch("pglens.adapters.tools.schema.databases", return_value=mock_registry))
-    for p in patches:
-        p.start()
-    try:
+    with (
+        patch("pglens.tools.db", return_value=mock_db),
+        patch("pglens.tools.databases", return_value=mock_registry),
+    ):
         return await tool.fn(ctx=_make_ctx(mock_db), **kwargs)
-    finally:
-        for p in patches:
-            p.stop()
 
 
 def _called(mock_db: AsyncMock) -> list[str]:
@@ -363,7 +356,7 @@ class TestToolSchemas:
         """The range is enforced by the SDK's argument validation, not only advertised."""
         mock_db = AsyncMock(spec=AsyncpgDatabase)
         with (
-            patch("pglens.adapters.tools.exploration.db", return_value=mock_db),
+            patch("pglens.tools.db", return_value=mock_db),
             pytest.raises(Exception, match="(?i)less than or equal to 100"),
         ):
             await mcp._tool_manager.call_tool(

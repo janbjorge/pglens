@@ -6,7 +6,7 @@ import asyncpg
 import pytest_asyncio
 from testcontainers.postgres import PostgresContainer
 
-from pglens.adapters.asyncpg_adapter import AsyncpgDatabase
+from pglens.database import AsyncpgDatabase
 
 
 def _setup_sql() -> str:

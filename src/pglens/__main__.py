@@ -3,7 +3,7 @@
 import argparse
 from importlib.metadata import version
 
-from pglens.adapters.mcp_adapter import mcp
+from pglens import mcp
 
 
 def main() -> None:
