@@ -722,6 +722,7 @@ class TestFindJoinPath:
     async def test_find_join_path_direct(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
         pool.fetch.return_value = [
             make_record(
+                constraint_oid=1,
                 from_table="orders",
                 from_column="user_id",
                 to_table="users",
@@ -745,12 +746,14 @@ class TestFindJoinPath:
     async def test_find_join_path_multi_hop(self, db: AsyncpgDatabase, pool: AsyncMock) -> None:
         pool.fetch.return_value = [
             make_record(
+                constraint_oid=1,
                 from_table="orders",
                 from_column="user_id",
                 to_table="users",
                 to_column="id",
             ),
             make_record(
+                constraint_oid=2,
                 from_table="order_items",
                 from_column="order_id",
                 to_table="orders",
