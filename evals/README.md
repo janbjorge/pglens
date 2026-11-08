@@ -1,9 +1,8 @@
 # pglens evals
 
-Measures how well a model uses the pglens tool surface on a seeded database:
-which tools it picks, how many calls it needs, how many tokens it spends, and
-whether it lands on the right answer. Run it before and after a change to the
-tool surface and compare the two result files.
+Measures model use of the pglens tool surface on a seeded database: chosen tools,
+call count, token use, and answer correctness. Run it before and after changing the
+tool surface, then compare the result files.
 
 Each run drives `claude -p` once per task in `tasks.json` against a throwaway
 `postgres:18` container seeded with `schema.sql`. It spends API tokens on every
@@ -15,13 +14,12 @@ uv run python evals/run.py --only exact_count --only two_hop_join
 uv run python evals/run.py --model claude-sonnet-5-5
 ```
 
-Results land in `results/<git-sha>.json` (`-dirty` is appended when the working
-tree has uncommitted changes), with a summary table printed at the end. The
-`results/` directory is gitignored: copy the summary numbers into the baseline
-table below rather than committing the file. Each
-task records the ordered pglens tool calls, the calls that were not in
-`expect_tools` (unexpected picks), the built-in tools used (ToolSearch), the token
-usage, cost, wall time and pass/fail.
+Results go to `results/<git-sha>.json`; `-dirty` is appended when the working tree
+has uncommitted changes. The command prints a summary table. `results/` is
+gitignored, so copy summary numbers into the baseline table instead of committing
+the file. Each task records ordered pglens tool calls, calls outside
+`expect_tools`, built-in tools used (`ToolSearch`), token usage, cost, wall time,
+and pass/fail.
 
 Requirements: Docker (for testcontainers), the `claude` CLI logged in, and
 `uv sync --group dev`.
