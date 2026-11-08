@@ -63,6 +63,19 @@ class TestLikePattern:
         assert like_pattern("email") == "email"
 
 
+class TestDirectObjectDescriptions:
+    async def test_describe_view_queries_exact_name(self, pool: AsyncMock) -> None:
+        db = AsyncpgDatabase(pool=pool)
+        pool.fetch.return_value = []
+
+        await db.describe_view("active_orders", "public")
+
+        sql, schema, name = pool.fetch.call_args[0]
+        assert "v.table_schema = $1 AND v.table_name = $2" in sql
+        assert (schema, name) == ("public", "active_orders")
+        assert "LIMIT" not in sql
+
+
 class TestCataloguePatterns:
     async def test_list_tables_filters_before_limit(self, pool: AsyncMock) -> None:
         db = AsyncpgDatabase(pool=pool)

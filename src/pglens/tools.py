@@ -157,23 +157,21 @@ async def describe_object(
     rows: list[dict[str, object]]
     match kind:
         case "view":
-            rows, key = await source.list_views(schema, CATALOGUE_PAGE, "full"), "view_name"
+            rows = await source.describe_view(name, schema)
         case "matview":
-            rows = await source.matview_status(schema, CATALOGUE_PAGE, "full")
-            key = "matview_name"
+            rows = await source.describe_matview(name, schema)
         case "function":
-            rows = await source.list_functions(schema, CATALOGUE_PAGE, "full")
-            key = "function_name"
+            rows = await source.describe_function(name, schema)
         case "sequence":
-            rows, key = await source.sequence_health(schema, CATALOGUE_PAGE), "sequence_name"
+            rows = await source.describe_sequence(name, schema)
         case "index":
-            rows, key = await source.list_indexes(schema, CATALOGUE_PAGE, "full"), "index_name"
+            rows = await source.describe_index(name, schema)
         case _:
             raise ValueError(f"Unknown kind {kind!r}")
     return {
         "object": f"{schema}.{name}",
         "kind": kind,
-        "definitions": [row for row in rows if row[key] == name],
+        "definitions": rows,
         "dependents": await source.object_dependencies(name, kind, schema),
     }
 
