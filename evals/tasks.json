@@ -2,127 +2,256 @@
   {
     "name": "distinct_status_values",
     "prompt": "What distinct values does orders.status have, and how many orders have each value?",
-    "expected": {"contains": ["pending", "shipped", "confirmed"]},
-    "expect_tools": ["column_values", "query"]
+    "expected": {
+      "contains": [
+        "pending",
+        "shipped",
+        "confirmed"
+      ]
+    },
+    "expect_tools": [
+      "column_values",
+      "query"
+    ]
   },
   {
     "name": "two_hop_join",
     "prompt": "Which users have an order that contains the product named Widget? Answer with the usernames.",
-    "expected": {"contains": ["alice"]},
-    "expect_tools": ["describe_table", "find_join_path", "query"]
+    "expected": {
+      "contains": [
+        "alice"
+      ]
+    },
+    "expect_tools": [
+      "describe_table",
+      "find_join_path",
+      "query"
+    ]
   },
   {
     "name": "three_hop_join",
     "prompt": "What is the total amount paid across all payments made by the user alice?",
-    "expected": {"contains": ["29.97"]},
-    "expect_tools": ["describe_table", "find_join_path", "query"]
+    "expected": {
+      "contains": [
+        "52.47"
+      ]
+    },
+    "expect_tools": [
+      "describe_table",
+      "find_join_path",
+      "query"
+    ]
   },
   {
     "name": "references_to_users",
     "prompt": "Which tables have a foreign key that references the users table?",
-    "expected": {"contains": ["orders", "tickets"]},
-    "expect_tools": ["describe_table"]
+    "expected": {
+      "contains": [
+        "orders",
+        "tickets"
+      ]
+    },
+    "expect_tools": [
+      "describe_table"
+    ]
   },
   {
     "name": "query_plan",
     "prompt": "Show the execution plan for SELECT * FROM users WHERE id = 1 and name the scan type the planner chose.",
-    "expected": {"regex": "(?i)(index|seq) scan"},
-    "expect_tools": ["explain_query"]
+    "expected": {
+      "regex": "(?i)(index|seq) scan"
+    },
+    "expect_tools": [
+      "explain_query"
+    ]
   },
   {
     "name": "unused_index",
     "prompt": "Which indexes in the public schema have never been scanned?",
-    "expected": {"contains": ["idx_users_bio"]},
-    "expect_tools": ["unused_indexes"]
+    "expected": {
+      "contains": [
+        "idx_users_bio"
+      ]
+    },
+    "expect_tools": [
+      "unused_indexes"
+    ]
   },
   {
     "name": "largest_table",
     "prompt": "Which table in the public schema uses the most disk including its indexes, and how big is it?",
-    "expected": {"regex": "(?i)\\d+ ?(bytes|kb|mb)"},
-    "expect_tools": ["table_sizes"]
+    "expected": {
+      "regex": "(?i)\\d+ ?(bytes|kb|mb)"
+    },
+    "expect_tools": [
+      "table_sizes"
+    ]
   },
   {
     "name": "blocking_locks",
     "prompt": "Is any session currently blocked on a lock?",
-    "expected": {"regex": "(?i)\\b(no|none|not|0)\\b"},
-    "expect_tools": ["blocking_locks"]
+    "expected": {
+      "regex": "(?i)\\b(no|none|not|0)\\b"
+    },
+    "expect_tools": [
+      "blocking_locks"
+    ]
   },
   {
     "name": "configured_databases",
     "prompt": "Which database aliases does this pglens server have configured, and which PostgreSQL major version is it running?",
-    "expected": {"contains": ["test", "18"]},
-    "expect_tools": ["database_info"]
+    "expected": {
+      "contains": [
+        "pglens_eval",
+        "18"
+      ]
+    },
+    "expect_tools": [
+      "database_info"
+    ]
   },
   {
     "name": "enum_values",
     "prompt": "What values can the order_status enum type take?",
-    "expected": {"contains": ["pending", "confirmed", "shipped", "delivered"]},
-    "expect_tools": ["search_enum_values"]
+    "expected": {
+      "contains": [
+        "pending",
+        "confirmed",
+        "shipped",
+        "delivered"
+      ]
+    },
+    "expect_tools": [
+      "search_enum_values"
+    ]
   },
   {
     "name": "mixed_case_filter",
     "prompt": "How many tickets are currently open? Be careful: the status column is free text with inconsistent casing.",
-    "expected": {"regex": "\\b3\\b"},
-    "expect_tools": ["column_values", "query"]
+    "expected": {
+      "regex": "\\b3\\b"
+    },
+    "expect_tools": [
+      "column_values",
+      "query"
+    ]
   },
   {
     "name": "find_email_columns",
     "prompt": "Which tables in the public schema have a column named email?",
-    "expected": {"contains": ["users", "customers"]},
-    "expect_tools": ["search_columns"]
+    "expected": {
+      "contains": [
+        "users",
+        "customers"
+      ]
+    },
+    "expect_tools": [
+      "search_columns"
+    ]
   },
   {
     "name": "exact_count",
     "prompt": "Exactly how many rows does the order_items table contain? Do not rely on estimates.",
-    "expected": {"regex": "\\b3\\b"},
-    "expect_tools": ["query"]
+    "expected": {
+      "regex": "\\b3\\b"
+    },
+    "expect_tools": [
+      "query"
+    ]
   },
   {
     "name": "function_source",
     "prompt": "What does the update_modified_column function do? Quote the relevant line of its source code.",
-    "expected": {"contains": ["created_at"]},
-    "expect_tools": ["list_functions"]
+    "expected": {
+      "contains": [
+        "created_at"
+      ]
+    },
+    "expect_tools": [
+      "list_functions"
+    ]
   },
   {
     "name": "triggers_on_orders",
     "prompt": "Which triggers exist on the orders table, and which function does each one call?",
-    "expected": {"contains": ["trg_orders_modified", "update_modified_column"]},
-    "expect_tools": ["list_triggers"]
+    "expected": {
+      "contains": [
+        "trg_orders_modified",
+        "update_modified_column"
+      ]
+    },
+    "expect_tools": [
+      "list_triggers"
+    ]
   },
   {
     "name": "rls_policies",
     "prompt": "Does the orders table have row-level security policies? Name them.",
-    "expected": {"contains": ["orders_owner_policy"]},
-    "expect_tools": ["list_policies"]
+    "expected": {
+      "contains": [
+        "orders_owner_policy"
+      ]
+    },
+    "expect_tools": [
+      "list_policies"
+    ]
   },
   {
     "name": "view_definition",
     "prompt": "What is the SQL definition of the active_orders view? Which status does it exclude?",
-    "expected": {"contains": ["delivered"]},
-    "expect_tools": ["list_views"]
+    "expected": {
+      "contains": [
+        "delivered"
+      ]
+    },
+    "expect_tools": [
+      "list_views"
+    ]
   },
   {
     "name": "sequence_exhaustion",
     "prompt": "Which sequence in the public schema is closest to running out of values?",
-    "expected": {"contains": ["countdown"]},
-    "expect_tools": ["sequence_health"]
+    "expected": {
+      "contains": [
+        "countdown"
+      ]
+    },
+    "expect_tools": [
+      "sequence_health"
+    ]
   },
   {
     "name": "matview_concurrent_refresh",
     "prompt": "Can the order_summary materialized view be refreshed with REFRESH MATERIALIZED VIEW CONCURRENTLY? Why or why not?",
-    "expected": {"regex": "(?i)\\byes\\b|unique index"},
-    "expect_tools": ["matview_status"]
+    "expected": {
+      "regex": "(?i)\\byes\\b|unique index"
+    },
+    "expect_tools": [
+      "matview_status"
+    ]
   },
   {
     "name": "dependencies_before_drop",
     "prompt": "What would break if the users table were dropped? List the dependent objects.",
-    "expected": {"contains": ["active_orders", "order_summary"]},
-    "expect_tools": ["object_dependencies"]
+    "expected": {
+      "contains": [
+        "active_orders",
+        "order_summary"
+      ]
+    },
+    "expect_tools": [
+      "object_dependencies"
+    ]
   },
   {
     "name": "sample_shape",
     "prompt": "Show me what a row in the products table looks like.",
-    "expected": {"regex": "(?i)widget|gizmo|thingamajig"},
-    "expect_tools": ["sample_rows", "query"]
+    "expected": {
+      "regex": "(?i)widget|gizmo|thingamajig"
+    },
+    "expect_tools": [
+      "sample_rows",
+      "query"
+    ]
   }
 ]

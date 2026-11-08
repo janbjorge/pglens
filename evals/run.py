@@ -259,7 +259,12 @@ def main() -> None:
     dirty = bool(git("status", "--porcelain"))
     out = args.out or EVALS / "results" / f"{sha}{'-dirty' if dirty else ''}.json"
 
-    with PostgresContainer("postgres:18", driver=None) as container:
+    # Pinned so the run does not depend on POSTGRES_* in the caller's shell
+    # (testcontainers reads POSTGRES_DB, POSTGRES_USER and POSTGRES_PASSWORD).
+    container = PostgresContainer(
+        "postgres:18", username="pglens", password="pglens", dbname="pglens_eval", driver=None
+    )
+    with container:
         asyncio.run(seed(container, EVALS / "schema.sql"))
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "mcp.json"
