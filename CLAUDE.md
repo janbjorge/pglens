@@ -62,6 +62,7 @@ asyncpg pool → PostgreSQL (readonly transactions)
 
 ## Important
 
+- Open work on the MCP surface is tracked in `TODO.md`, ranked by win with refs and required regression tests. Delete an item when it merges; never mark it done. Re-run the baseline script there after each merge.
 - Keep `README.md` up to date when making user-facing changes (new tools, config changes, usage changes).
 - Python 3.11+ required. Strict mypy enabled.
 - Linting (`ruff check`, `ruff format --check`) and type checking (`ty check`) currently pass — keep them green.
