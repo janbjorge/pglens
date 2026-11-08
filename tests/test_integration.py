@@ -284,6 +284,11 @@ class TestQueryExecution:
         result = await db.query("SELECT generate_series(1, 1000) AS n")
         assert len(result) == 500  # Capped at 500
 
+    async def test_query_truncates_long_text_cells(self, db: AsyncpgDatabase) -> None:
+        [row] = await db.query("SELECT repeat('x', 5000) AS body, 7 AS n")
+        assert row["n"] == 7
+        assert row["body"] == "x" * 1000 + "…[truncated, 5000 chars total]"
+
     async def test_explain_query(self, db: AsyncpgDatabase) -> None:
         plan = await db.explain_query("SELECT * FROM users WHERE id = 1")
         assert "users" in plan.lower()

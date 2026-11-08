@@ -33,5 +33,8 @@ async def query(
     Supports limit/offset for pagination, but large offsets degrade performance.
     For large result sets, prefer keyset pagination in your SQL
     (e.g. WHERE id > last_seen_id ORDER BY id) over high offset values.
+    Text cells longer than the server's limit (default 1000 characters) are cut
+    and end with "…[truncated, N chars total]"; select a substring or a
+    json path when you need the rest.
     """
     return await db(ctx, database).query(sql, limit=limit, offset=offset)

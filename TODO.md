@@ -15,9 +15,9 @@ Rules
 | Metric | Value (2026-11-08, after items 1-4) |
 |---|---|
 | Tools | 31 |
-| Tool-definition JSON, compact | 32,996 chars (about 8k tokens at 4 chars/token) |
-| Average per tool | 1,064 chars |
-| Largest tools | query 1,770, explain_query 1,578, find_join_path 1,377 |
+| Tool-definition JSON, compact | 36,712 chars (about 9k tokens at 4 chars/token) |
+| Average per tool | 1,184 chars |
+| Largest tools | query 2,100, explain_query 1,682, find_join_path 1,481 |
 | Parameters with a `description` in the schema | 76 of 76 |
 | Tools with annotations | 31 of 31 |
 | Server `instructions` | 2,289 chars |
@@ -52,7 +52,7 @@ Token figures are chars/4 estimates, not tokenizer counts. Good enough to track 
 Win: high. Effort: medium. All clients.
 
 Why
-- Tool definitions cost about 8k tokens once per session and are prompt-cached. Tool output is paid on every call and stays in context. `list_functions` selects `p.prosrc` for every function in the schema, `list_views` returns every view definition, `list_indexes` returns every index definition, `describe_table` returns six sections, and `query`, `sample_rows`, `search_data` return `SELECT *` rows with unbounded cell sizes (text, json, bytea).
+- Tool definitions cost about 8k tokens once per session and are prompt-cached. Tool output is paid on every call and stays in context. `list_functions` selects `p.prosrc` for every function in the schema, `list_views` returns every view definition, `list_indexes` returns every index definition, and `describe_table` returns six sections.
 - Anthropic: use "pagination, range selection, filtering, and/or truncation" with sensible defaults, and treat every tool response as spend from a finite attention budget. https://www.anthropic.com/engineering/writing-tools-for-agents
 - Claude Code warns above 10,000 output tokens per call, caps at 25,000 by default (`MAX_MCP_OUTPUT_TOKENS`), and writes text results over 50,000 characters to a file unless the tool declares `_meta["anthropic/maxResultSizeChars"]`. https://code.claude.com/docs/en/mcp
 - DBHub's `search_objects` uses `detail_level` `names`, `summary`, `full` for the same reason. https://dbhub.ai/tools/search-objects.md
@@ -60,19 +60,16 @@ Why
 Change
 - New alias `Detail = Literal["names", "summary", "full"]` in `core/types.py`, default `"summary"`. `names`: name and schema only. `summary`: today's row minus `source`, `definition`, `most_common_vals`. `full`: today's row. Apply to `list_functions`, `list_views`, `list_indexes`, `matview_status`, and to `describe_table` (`summary` skips `check_constraints` and index definitions). After item 7 these become parameters of `list_objects` and `describe_object`.
 - New alias `ListLimit = Annotated[int, Field(ge=1, le=1000, description=...)]`, default 100, on the schema-wide list tools. Pass it as a bind parameter (`LIMIT $2`), never by string formatting.
-- Cell truncation in `query`, `sample_rows`, `search_data`: cut any `str` cell longer than `max_cell_chars` to that length and append `…[truncated, N chars total]`. New `Settings.max_cell_chars: NonNegativeInt = 1000`, env `PGLENS_MAX_CELL_CHARS`, `0` disables, matching the existing "0 disables" convention. Pass it into `AsyncpgDatabase(pool, max_cell_chars=...)` from `app_lifespan`; no module state.
 
 Regression tests
-- `tests/test_asyncpg_adapter.py` with `make_record`: `list_functions(detail="summary")` rows have no `source`; `detail="full"` rows have it; `limit` appears as `LIMIT $2` in the SQL text and the value is passed. `query` with a 5,000-character cell returns 1,000 characters plus the marker; with `max_cell_chars=0` the cell is untouched. Non-string cells (int, datetime, bytes) are never touched.
-- `tests/test_settings.py`: `PGLENS_MAX_CELL_CHARS=abc` raises `ValidationError`; unset gives 1000.
+- `tests/test_asyncpg_adapter.py` with `make_record`: `list_functions(detail="summary")` rows have no `source`; `detail="full"` rows have it; `limit` appears as `LIMIT $2` in the SQL text and the value is passed.
 - `tests/test_integration.py`: create one plpgsql function, call `list_functions` at all three detail levels, assert `source` only at `full`.
 
 Done when
-- Every list tool has `detail` and `limit`; a `query` on a table with a 1 MB text cell returns under 5 KB.
+- Every list tool has `detail` and `limit`.
 
 Docs
-- README: tool table rows for the affected tools; configuration table gets `PGLENS_MAX_CELL_CHARS`.
-- CLAUDE.md: mention `max_cell_chars` on `AsyncpgDatabase`.
+- README: tool table rows for the affected tools.
 
 ## 6. Eval harness, prerequisite for item 7
 
