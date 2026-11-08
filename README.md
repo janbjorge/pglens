@@ -304,6 +304,8 @@ adapters/asyncpg_adapter.py  (SQL queries, asyncpg pool)
 
 `AsyncpgDatabase` holds the asyncpg pool and all query methods. Tool modules in `adapters/tools/` are thin wrappers that register MCP tools via decorators and delegate to it. All queries use pure `pg_catalog` introspection, so no PostgreSQL extensions are required.
 
+`evals/` holds a hand-run eval harness that drives `claude -p` through a set of database questions against a seeded container and records tool choices, tokens and pass rate, so changes to the tool surface can be compared before and after. See `evals/README.md`.
+
 **Adding a tool:**
 
 1. Add a method to `AsyncpgDatabase` in `adapters/asyncpg_adapter.py`.
